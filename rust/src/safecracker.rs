@@ -8,7 +8,7 @@ use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
 const MAX_ATTEMPTS_PER_SESSION: usize = 10; 
-const MAX_RETRIES: usize = 3; // Maximum number of connection retry attempts
+const MAX_RETRIES: usize = 3;
 
 struct TestResult {
     combo: String,
@@ -16,7 +16,6 @@ struct TestResult {
     details: String,
 }
 
-// Fixed: Wrap session creation in a connection retry loop
 async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error>> {
     let client = Client::builder()
         .cookie_store(true)
@@ -35,22 +34,28 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
             Ok(_) => break,
             Err(e) => {
                 retry_count += 1;
-                if retry_count >= MAX_RETRIES {
-                    return Err(Box::new(e));
-                }
-                println!("[WARN] Connection failed during session creation. Retrying {}/{} in 1s...", retry_count, MAX_RETRIES);
+                if retry_count >= MAX_RETRIES { return Err(Box::new(e)); }
+                println!("[WARN] Connection failed during session creation. Retrying {}/{}...", retry_count, MAX_RETRIES);
                 sleep(Duration::from_secs(1)).await;
             }
         }
     }
-
     Ok(client)
 }
 
-// Fixed: Wrap form clicks and submission inputs in an error-recovery loop
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<String, reqwest::Error> {
-    let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
+    // 1. New State Reset Logic: Force dials to a clean baseline before selecting target values
+    let reset_parameters = vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")];
+    for (param, value) in reset_parameters {
+        let mut reset_form = HashMap::new();
+        reset_form.insert("action", "select".to_string());
+        reset_form.insert("param", param.to_string());
+        form.insert("value", value.to_string());
+        let _ = client.post(url).form(&reset_form).send().await;
+    }
 
+    // 2. Standard target selection execution
+    let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
     for (param, value) in parameters {
         if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
         
@@ -66,7 +71,6 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
                 Err(e) => {
                     retry_count += 1;
                     if retry_count >= MAX_RETRIES { return Err(e); }
-                    println!("[WARN] Selection failed for Param {}. Retrying {}/{}...", param, retry_count, MAX_RETRIES);
                     sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -87,7 +91,6 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
             Err(e) => {
                 retry_count += 1;
                 if retry_count >= MAX_RETRIES { return Err(e); }
-                println!("[WARN] 'Open Safe' request failed. Retrying {}/{}...", retry_count, MAX_RETRIES);
                 sleep(Duration::from_secs(1)).await;
             }
         }
@@ -104,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url: &str = &args[1];
+    let target_url: &str = &args;
     
     let mut delay_ms: u64 = 0;
     for arg in &args {
@@ -120,12 +123,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 delay_ms = args[idx + 1].parse().unwrap_or(0);
             }
         }
-    }
-
-    if delay_ms > 0 {
-        println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
-    } else {
-        println!("[CONFIG] Warning: No throttling delay active. Running at full network speed.");
     }
 
     println!("Connecting to target sequence engine: {}...", target_url);
