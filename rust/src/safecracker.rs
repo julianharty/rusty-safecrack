@@ -9,7 +9,6 @@ use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
 const MAX_ATTEMPTS_PER_SESSION: usize = 10;
-const MAX_RETRIES: usize = 3;
 
 struct TestResult {
     combo: String, status: String, details: String,
@@ -24,13 +23,7 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
     let mut token = HashMap::new();
     token.insert("action", "set_name");
     token.insert("name", name.as_str());
-
-    let mut r = 0;
-    loop {
-        if client.post(url).form(&token).send().await.is_ok() { break; }
-        r += 1; if r >= MAX_RETRIES { return Err("Init failed".into()); }
-        sleep(Duration::from_millis(500)).await;
-    }
+    let _ = client.post(url).form(&token).send().await;
     Ok(client)
 }
 
@@ -38,7 +31,7 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
-    let target_url: &str = &args[1];
+    let target_url: &str = &args;
     
     let mut delay_ms: u64 = 0;
     if let Some(idx) = args.iter().position(|x| x == "--delay") {
@@ -81,27 +74,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = create_session(target_url, current_batch).await?;
     let mut attempt_counter = 0;
 
-    // Browser Default Starting State (when you click Start)
-    let mut cur_a = "red";
-    let mut cur_b = "left";
-    let mut cur_c = "0";
-    let mut cur_d = "alpha";
+    let mut cur_a = "red"; let mut cur_b = "left"; let mut cur_c = "0"; let mut cur_d = "alpha";
 
-    println!("Running matrix sweep using Delta Browser Simulation...");
+    println!("Running matrix sweep using Strict Synchronous Browser Simulation...");
 
     for (a, b, c, d, label) in test_cases {
         if attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
             current_batch += 1;
             client = create_session(target_url, current_batch).await?;
             attempt_counter = 0;
-            // Reset browser memory back to safe defaults for the new session
             cur_a = "red"; cur_b = "left"; cur_c = "0"; cur_d = "alpha";
         }
 
         let start = Instant::now();
         let targets = vec![("A", a, &mut cur_a), ("B", b, &mut cur_b), ("C", c, &mut cur_c), ("D", d, &mut cur_d)];
 
-        // Delta Clicker: Only execute a POST if the target differs from current state
         for (param, target_val, current_val) in targets {
             if target_val != *current_val {
                 if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
@@ -110,8 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 form.insert("param", param);
                 form.insert("value", target_val);
                 
-                let _ = client.post(target_url).form(&form).send().await;
-                *current_val = target_val; // Sync local browser memory
+                // Fixed: Await the network response text before moving to the next parameter
+                let res = client.post(target_url).form(&form).send().await;
+                if let Ok(response) = res {
+                    let _ = response.text().await;
+                }
+                *current_val = target_val;
             }
         }
 
