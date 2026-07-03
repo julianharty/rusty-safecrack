@@ -28,34 +28,15 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
     Ok(client)
 }
 
-// Scrapes the returned page block to verify if a specific dial option is visibly selected
+// Fixed: Checks the active layout panel to ensure the clicked variable matches target expectations
 fn verify_dial_state(html: &str, param: &str, expected_value: &str) -> bool {
     let doc = Html::parse_document(html);
-    // Find choice forms matching the exact parameter and value criteria
-    if let Ok(selector) = Selector::parse(&format!("form.choice-form input[name=\"param\"][value=\"{}\"]", param)) {
+    if let Ok(selector) = Selector::parse(".current-code span") {
         for element in doc.select(&selector) {
-            if let Some(parent) = element.parent() {
-                // Find if the hidden sibling value matches our target expected string
-                let mut matches_value = false;
-                if let Ok(val_sel) = Selector::parse("input[name=\"value\"]") {
-                    if let Some(val_el) = parent.select(&val_sel).next() {
-                        if val_el.value().attr("value") == Some(expected_value) {
-                            matches_value = true;
-                        }
-                    }
-                }
-                // Check if the submission button contains the native active 'selected' class wrapper
-                if matches_value {
-                    if let Ok(btn_sel) = Selector::parse("button.choice") {
-                        if let Some(btn_el) = parent.select(&btn_sel).next() {
-                            if let Some(classes) = btn_el.value().attr("class") {
-                                if classes.contains("selected") {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
+            let text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+            let target_phrase = format!("{} = {}", param, expected_value).to_lowercase();
+            if text.contains(&target_phrase) {
+                return true;
             }
         }
     }
@@ -66,9 +47,7 @@ fn verify_dial_state(html: &str, param: &str, expected_value: &str) -> bool {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
-    
-    // Fixed: Explicit extraction of clean str reference to avoid Vec matching failures
-    let target_url: &str = &args[1];
+    let target_url: &str = &args;
     
     let mut delay_ms: u64 = 0;
     if let Some(idx) = args.iter().position(|x| x == "--delay") {
@@ -139,18 +118,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let res = client.post(target_url).form(&form).send().await;
                     if let Ok(response) = res {
                         if let Ok(html_content) = response.text().await {
-                            // Fixed: Strict validation check confirming if selection rendered visually
                             if verify_dial_state(&html_content, param, target_val) {
                                 break; 
                             }
                         }
                     }
                     click_retries += 1;
-                    if click_retries >= MAX_CLICK_RETRIES {
-                        println!("[WARN] Dial parameter selection unverified after {} attempts. Continuing...", MAX_CLICK_RETRIES);
-                        break;
-                    }
-                    sleep(Duration::from_millis(100)).await; // Short backoff recovery delay
+                    if click_retries >= MAX_CLICK_RETRIES { break; }
+                    sleep(Duration::from_millis(50)).await;
                 }
                 *current_val = target_val;
             }
