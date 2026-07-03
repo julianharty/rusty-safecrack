@@ -67,7 +67,9 @@ async fn run_combo(client: &Client, url: &str, a: &str, b: &str, c: &str, d: &st
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
-    let target_url: &str = &args;
+    
+    // Fixed: Explicitly extract index 1 string slice to clean up type matching rules
+    let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
     if let Some(idx) = args.iter().position(|x| x == "--delay") {
