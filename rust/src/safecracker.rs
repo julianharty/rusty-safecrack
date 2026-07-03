@@ -29,32 +29,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Error: Missing target URL.");
-        eprintln!("Usage: cargo run --bin safecracker <TARGET_URL>");
+        eprintln!("Usage: cargo run --bin safecracker <TARGET_URL> [--debug]");
         std::process::exit(1);
     }
+    
     let target_url = &args[1];
+    let debug_mode = args.contains(&"--debug".to_string());
 
     let client = Client::builder()
         .cookie_store(true)
         .build()?;
 
     println!("Connecting to target: {}...", target_url);
+
+    // Debug Action: Capture raw landing page layout before submitting form data
+    if debug_mode {
+        println!("[DEBUG] Fetching raw landing page markup...");
+        let landing_html = client.get(target_url).send().await?.text().await?;
+        let mut f = File::create("./debug_landing_page.html")?;
+        f.write_all(landing_html.as_bytes())?;
+        println!("[DEBUG] Saved original landing file to ./debug_landing_page.html");
+    }
     
-    // Act: Submit the correct 'name' form key to pass through the landing gate
+    // Act: Submit standard gate credentials
     let mut startup_token = HashMap::new();
     startup_token.insert("name", "Automated Combinatorial Rust Tool");
     startup_token.insert("submit", "Start");
 
-    client.post(target_url)
+    println!("Submitting session registration sequence payload...");
+    let login_res = client.post(target_url)
         .form(&startup_token)
         .send()
         .await?;
 
     println!("Extracting functional workspace configuration values...");
-    let workspace_body = client.get(target_url).send().await?.text().await?;
+    let workspace_body = login_res.text().await?;
     
-    // Diagnostic trace log
-    if workspace_body.contains("Student or team name") {
+    // Debug Action: Capture the server response state immediately following registration
+    if debug_mode {
+        let mut f = File::create("./debug_post_login_page.html")?;
+        f.write_all(workspace_body.as_bytes())?;
+        println!("[DEBUG] Saved post-login screen response to ./debug_post_login_page.html");
+    }
+
+    if workspace_body.contains("Student or team name") || workspace_body.contains("name=\"name\"") {
         println!("WARNING: Session authentication failed. Still stuck on landing gate.");
     } else {
         println!("SUCCESS: Successfully logged in! Challenge workspace is active.");
@@ -75,7 +93,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !options.is_empty() { param_space.insert(key.to_string(), options); }
     }
 
-    // Dynamic Fallback Matrix if selectors are customized
     if param_space.is_empty() {
         println!("Structural options elements not parsed. Proceeding with fallback parameters...");
         param_space.insert("paramA".to_string(), vec!["red".to_string(), "green".to_string(), "blue".to_string()]);
