@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::Write;
+use std::time::Instant;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use tokio::time::{sleep, Duration};
@@ -10,10 +11,14 @@ const REPORT_FILE: &str = "./safecrack_report.md";
 const MAX_ATTEMPTS_PER_SESSION: usize = 10; 
 const MAX_RETRIES: usize = 3;
 
+#[derive(Clone)]
 struct TestResult {
     combo: String,
     status: String,
     details: String,
+    latency_ms: u128,
+    payload_bytes: usize,
+    http_status: String,
 }
 
 async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error>> {
@@ -43,8 +48,9 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
     Ok(client)
 }
 
-async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<String, reqwest::Error> {
-    // 1. Fixed Reset Logic: Force dials back to baseline utilizing the right 'reset_form' map key identifier
+async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<(String, String, u128), reqwest::Error> {
+    let start_time = Instant::now();
+    
     let reset_parameters = vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")];
     for (param, value) in reset_parameters {
         let mut reset_form = HashMap::new();
@@ -54,7 +60,6 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
         let _ = client.post(url).form(&reset_form).send().await;
     }
 
-    // 2. Standard target selection execution
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
     for (param, value) in parameters {
         if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
@@ -82,11 +87,14 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
     attempt_form.insert("action", "add_attempt".to_string());
 
     let mut retry_count = 0;
-    let final_body = loop {
+    let (final_body, status_str) = loop {
         match client.post(url).form(&attempt_form).send().await {
-            Ok(res) => match res.text().await {
-                Ok(text) => break text,
-                Err(e) => return Err(e),
+            Ok(res) => {
+                let status_code = res.status().to_string();
+                match res.text().await {
+                    Ok(text) => break (text, status_code),
+                    Err(e) => return Err(e),
+                }
             },
             Err(e) => {
                 retry_count += 1;
@@ -96,7 +104,8 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
         }
     };
 
-    Ok(final_body)
+    let total_latency = start_time.elapsed().as_millis();
+    Ok((final_body, status_str, total_latency))
 }
 
 #[tokio::main]
@@ -107,7 +116,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    // Fixed: Explicitly bind index 1 slice data to clear type conversion problems
     let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
@@ -124,12 +132,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 delay_ms = args[idx + 1].parse().unwrap_or(0);
             }
         }
-    }
-
-    if delay_ms > 0 {
-        println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
-    } else {
-        println!("[CONFIG] Warning: No throttling delay active. Running at full network speed.");
     }
 
     println!("Connecting to target sequence engine: {}...", target_url);
@@ -166,20 +168,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut test_results: Vec<TestResult> = Vec::new();
+    let mut all_execution_logs: Vec<TestResult> = Vec::new();
     let mut current_batch = 1;
     let mut current_client = create_authenticated_session(target_url, current_batch).await?;
     let mut session_attempt_counter = 0;
 
-    println!("Running matrix audit with auto-cookie session rotation...");
+    println!("Running matrix audit with comprehensive verification logging...");
 
     for (a, b, c, d, rule_label) in combinations_to_test {
-        let body = submit_and_open_combo(&current_client, target_url, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await?;
+        let (body, status_code, latency) = submit_and_open_combo(&current_client, target_url, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await?;
         session_attempt_counter += 1;
         
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
+        let payload_size = body.len();
         let document = Html::parse_document(&body);
-        let mut matched_status = String::new();
+        let mut matched_status = "SECURELY_LOCKED".to_string();
+        let mut diagnostic_details = "Safe remained locked".to_string();
 
         if let Ok(selector) = Selector::parse(".display") {
             for element in document.select(&selector) {
@@ -187,18 +191,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !inner_text.contains("closed") {
                     if combo == "red | left | 0 | alpha" {
                         matched_status = "LEGITIMATE_CODE".to_string();
+                        diagnostic_details = "Authorized standard route".to_string();
                     } else {
                         matched_status = "BUG_FOUND".to_string();
+                        diagnostic_details = rule_label.clone();
                     }
                 }
             }
         }
 
-        if matched_status == "LEGITIMATE_CODE" {
-            test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized standard route".to_string() });
-        } else if matched_status == "BUG_FOUND" {
-            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: rule_label });
-        }
+        // Fixed: Record EVERY single attempt explicitly into the logs vector regardless of outcome
+        all_execution_logs.push(TestResult { 
+            combo, 
+            status: matched_status, 
+            details: diagnostic_details,
+            latency_ms: latency, 
+            payload_bytes: payload_size, 
+            http_status: status_code 
+        });
 
         if session_attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
             current_batch += 1;
@@ -207,15 +217,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Write final structured comprehensive metrics artifact summary log
     let mut file = File::create(REPORT_FILE)?;
-    writeln!(file, "# Production Safe Cracking Verification Matrix Report")?;
-    writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics |")?;
-    writeln!(file, "| :--- | :--- | :--- |")?;
-    for res in test_results {
-        writeln!(file, "| **{}** | `{}` | {} |", res.combo, res.status, res.details)?;
+    writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Verification Report")?;
+    writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics | Latency | Size | HTTP |")?;
+    writeln!(file, "| :--- | :--- | :--- | :--- | :--- | :--- |")?;
+    
+    for res in all_execution_logs {
+        writeln!(
+            file, 
+            "| **{}** | `{}` | {} | {}ms | {} B | `{}` |", 
+            res.combo, res.status, res.details, res.latency_ms, res.payload_bytes, res.http_status
+        )?;
     }
 
-    println!("Verification sweep complete. True defects cleanly stored in: {}", REPORT_FILE);
+    println!("Verification sweep complete. Exhaustive execution metrics cleanly stored in: {}", REPORT_FILE);
     Ok(())
 }
 
