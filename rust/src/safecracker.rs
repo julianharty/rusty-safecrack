@@ -18,8 +18,8 @@ struct TestResult {
 
 async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::error::Error>> {
     let client = Client::builder().cookie_store(true).build()?;
-    let name = format!("Sequential_Bot_B{}", id);
-    println!("[SESSION] Starting clean isolated batch window: {}", name);
+    let name = format!("Browser_Sim_B{}", id);
+    println!("[SESSION] Starting clean isolated 10-attempt window: {}", name);
 
     let mut token = HashMap::new();
     token.insert("action", "set_name");
@@ -34,41 +34,10 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
     Ok(client)
 }
 
-async fn run_combo(client: &Client, url: &str, a: &str, b: &str, c: &str, d: &str, delay: u64) -> Result<(String, String, u128), reqwest::Error> {
-    let start = Instant::now();
-    
-    // 1. Force state machine reset
-    for (p, v) in vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")] {
-        let mut form = HashMap::new();
-        form.insert("action", "select"); form.insert("param", p); form.insert("value", v);
-        let _ = client.post(url).form(&form).send().await;
-    }
-
-    // 2. Click target values
-    for (p, v) in vec![("A", a), ("B", b), ("C", c), ("D", d)] {
-        if delay > 0 { sleep(Duration::from_millis(delay)).await; }
-        let mut form = HashMap::new();
-        form.insert("action", "select"); form.insert("param", p); form.insert("value", v);
-        let _ = client.post(url).form(&form).send().await;
-    }
-
-    if delay > 0 { sleep(Duration::from_millis(delay)).await; }
-    let mut open_form = HashMap::new();
-    open_form.insert("action", "add_attempt");
-
-    let res = client.post(url).form(&open_form).send().await?;
-    let code = res.status().to_string();
-    let txt = res.text().await?;
-
-    Ok((txt, code, start.elapsed().as_millis()))
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
-    
-    // Fixed: Explicitly extract index 1 string slice to clean up type matching rules
     let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
@@ -112,44 +81,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = create_session(target_url, current_batch).await?;
     let mut attempt_counter = 0;
 
-    println!("Running structured sequential execution sweep...");
+    // Browser Default Starting State (when you click Start)
+    let mut cur_a = "red";
+    let mut cur_b = "left";
+    let mut cur_c = "0";
+    let mut cur_d = "alpha";
+
+    println!("Running matrix sweep using Delta Browser Simulation...");
 
     for (a, b, c, d, label) in test_cases {
         if attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
             current_batch += 1;
             client = create_session(target_url, current_batch).await?;
             attempt_counter = 0;
+            // Reset browser memory back to safe defaults for the new session
+            cur_a = "red"; cur_b = "left"; cur_c = "0"; cur_d = "alpha";
         }
 
-        if let Ok((body, status, latency)) = run_combo(&client, target_url, a, b, c, d, delay_ms).await {
-            attempt_counter += 1;
-            let combo = format!("{} | {} | {} | {}", a, b, c, d);
-            let size = body.len();
-            let mut eval_status = "SECURELY_LOCKED".to_string();
-            let mut diagnostics = "Safe remained locked".to_string();
+        let start = Instant::now();
+        let targets = vec![("A", a, &mut cur_a), ("B", b, &mut cur_b), ("C", c, &mut cur_c), ("D", d, &mut cur_d)];
 
-            let doc = Html::parse_document(&body);
-            if let Ok(sel) = Selector::parse(".display") {
-                for el in doc.select(&sel) {
-                    let txt = el.text().collect::<Vec<_>>().join(" ").to_lowercase();
-                    if !txt.contains("closed") {
-                        if combo == "red | left | 0 | alpha" {
-                            eval_status = "LEGITIMATE_CODE".to_string();
-                            diagnostics = "Authorized standard route".to_string();
-                        } else {
-                            eval_status = "BUG_FOUND".to_string();
-                            diagnostics = label.clone();
+        // Delta Clicker: Only execute a POST if the target differs from current state
+        for (param, target_val, current_val) in targets {
+            if target_val != *current_val {
+                if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
+                let mut form = HashMap::new();
+                form.insert("action", "select");
+                form.insert("param", param);
+                form.insert("value", target_val);
+                
+                let _ = client.post(target_url).form(&form).send().await;
+                *current_val = target_val; // Sync local browser memory
+            }
+        }
+
+        if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
+        let mut open_form = HashMap::new();
+        open_form.insert("action", "add_attempt");
+
+        if let Ok(res) = client.post(target_url).form(&open_form).send().await {
+            let status = res.status().to_string();
+            if let Ok(body) = res.text().await {
+                attempt_counter += 1;
+                let combo = format!("{} | {} | {} | {}", a, b, c, d);
+                let size = body.len();
+                let mut eval_status = "SECURELY_LOCKED".to_string();
+                let mut diagnostics = "Safe remained locked".to_string();
+
+                let doc = Html::parse_document(&body);
+                if let Ok(sel) = Selector::parse(".display") {
+                    for el in doc.select(&sel) {
+                        let txt = el.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                        if !txt.contains("closed") {
+                            if combo == "red | left | 0 | alpha" {
+                                eval_status = "LEGITIMATE_CODE".to_string();
+                                diagnostics = "Authorized standard route".to_string();
+                            } else {
+                                eval_status = "BUG_FOUND".to_string();
+                                diagnostics = label.clone();
+                            }
                         }
                     }
                 }
-            }
 
-            logs.push(TestResult { combo, status: eval_status, details: diagnostics, latency_ms: latency, payload_bytes: size, http_status: status });
+                logs.push(TestResult { combo, status: eval_status, details: diagnostics, latency_ms: start.elapsed().as_millis(), payload_bytes: size, http_status: status });
+            }
         }
     }
 
     let mut file = File::create(REPORT_FILE)?;
-    writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Sequential Report")?;
+    writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Delta Browser Report")?;
     writeln!(file, "\n| Combination Profile (A, B, C, D) | Status | Diagnostics | Latency | Size | HTTP |")?;
     writeln!(file, "| :--- | :--- | :--- | :--- | :--- | :--- |")?;
     for r in logs {
