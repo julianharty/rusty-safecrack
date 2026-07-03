@@ -13,11 +13,9 @@ struct TestResult {
     details: String,
 }
 
-// Fixed: Updates variables AND sends the final explicit "open" action
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String) -> Result<String, reqwest::Error> {
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
 
-    // 1. Select the four options sequentially
     for (param, value) in parameters {
         let mut form = HashMap::new();
         form.insert("action", "select".to_string());
@@ -27,7 +25,6 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
         client.post(url).form(&form).send().await?;
     }
 
-    // 2. Click the "Open Safe" button mechanism
     let mut open_form = HashMap::new();
     open_form.insert("action", "open".to_string());
 
@@ -49,7 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url = &args;
+    // Fixed: Explicitly binding a clean reference string slice to index 1
+    let target_url: &str = &args[1];
     let debug_mode = args.contains(&"--debug".to_string());
 
     let client = Client::builder()
@@ -58,7 +56,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connecting to target: {}...", target_url);
 
-    // Initial Gate Clearance Handshake
     let mut startup_token = HashMap::new();
     startup_token.insert("action", "set_name");
     startup_token.insert("name", "Automated Combinatorial Rust Tool");
@@ -92,11 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_and_open_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        // Parse HTML DOM structural attempts lists cleanly
         let document = Html::parse_document(&body);
         let mut matched_status = String::new();
 
-        // Fixed: Isolate historical entries by targeting only the single most recent .attempt row item layout
         if let Ok(selector) = Selector::parse(".attempt") {
             if let Some(latest_attempt) = document.select(&selector).last() {
                 let inner_text = latest_attempt.text().collect::<Vec<_>>().join(" ").to_lowercase();
@@ -117,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if matched_status == "LEGITIMATE_CODE" {
-            test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized base configuration route".to_string() });
+            test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized standard route".to_string() });
         } else if matched_status == "BUG_FOUND" {
             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Isolated via structural matrix verification".to_string() });
         }
