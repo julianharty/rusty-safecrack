@@ -42,7 +42,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    // Fixed: Pulling out the specific string slice at index 1 instead of passing the whole Vec reference
     let target_url = &args[1];
     let debug_mode = args.contains(&"--debug".to_string());
 
@@ -103,7 +102,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        if body.contains("correct code") || body.contains("correct configuration") || body.contains("opened with the correct") {
+        // Fixed: Strict evaluation targeting explicit action banner text states
+        if body.contains("opened with the correct code") {
             test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized base configuration route".to_string() });
         } else if body.contains("bug found") || body.contains("opened with a wrong code") {
             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Vulnerability isolated via Pairwise Matrix".to_string() });
@@ -123,6 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if is_three_way || is_four_way {
                         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
+                        // Fixed: Strict checking applied to augmentation sweep as well
                         if body.contains("bug found") || body.contains("opened with a wrong code") {
                             let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
                             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
