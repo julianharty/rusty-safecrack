@@ -8,6 +8,7 @@ use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
 const MAX_ATTEMPTS_PER_SESSION: usize = 10; 
+const MAX_RETRIES: usize = 3; // Maximum number of connection retry attempts
 
 struct TestResult {
     combo: String,
@@ -15,6 +16,7 @@ struct TestResult {
     details: String,
 }
 
+// Fixed: Wrap session creation in a connection retry loop
 async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error>> {
     let client = Client::builder()
         .cookie_store(true)
@@ -27,33 +29,69 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
     startup_token.insert("action", "set_name");
     startup_token.insert("name", team_name.as_str());
 
-    client.post(url).form(&startup_token).send().await?;
+    let mut retry_count = 0;
+    loop {
+        match client.post(url).form(&startup_token).send().await {
+            Ok(_) => break,
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= MAX_RETRIES {
+                    return Err(Box::new(e));
+                }
+                println!("[WARN] Connection failed during session creation. Retrying {}/{} in 1s...", retry_count, MAX_RETRIES);
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+
     Ok(client)
 }
 
+// Fixed: Wrap form clicks and submission inputs in an error-recovery loop
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<String, reqwest::Error> {
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
 
     for (param, value) in parameters {
         if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
+        
         let mut form = HashMap::new();
         form.insert("action", "select".to_string());
         form.insert("param", param.to_string());
         form.insert("value", value);
 
-        client.post(url).form(&form).send().await?;
+        let mut retry_count = 0;
+        loop {
+            match client.post(url).form(&form).send().await {
+                Ok(_) => break,
+                Err(e) => {
+                    retry_count += 1;
+                    if retry_count >= MAX_RETRIES { return Err(e); }
+                    println!("[WARN] Selection failed for Param {}. Retrying {}/{}...", param, retry_count, MAX_RETRIES);
+                    sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
     }
 
     if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
     let mut attempt_form = HashMap::new();
     attempt_form.insert("action", "add_attempt".to_string());
 
-    let final_body = client.post(url)
-        .form(&attempt_form)
-        .send()
-        .await?
-        .text()
-        .await?;
+    let mut retry_count = 0;
+    let final_body = loop {
+        match client.post(url).form(&attempt_form).send().await {
+            Ok(res) => match res.text().await {
+                Ok(text) => break text,
+                Err(e) => return Err(e),
+            },
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= MAX_RETRIES { return Err(e); }
+                println!("[WARN] 'Open Safe' request failed. Retrying {}/{}...", retry_count, MAX_RETRIES);
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    };
 
     Ok(final_body)
 }
@@ -66,7 +104,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    // Fixed: Explicitly extract the specific URL slice string component out of the arguments index array
     let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
