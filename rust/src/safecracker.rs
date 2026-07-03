@@ -7,7 +7,7 @@ use scraper::{Html, Selector};
 use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
-const MAX_ATTEMPTS_PER_SESSION: usize = 10; // Rotate before the 10th attempt lockout
+const MAX_ATTEMPTS_PER_SESSION: usize = 10; // Maximised to exactly 10 attempts per session block
 
 struct TestResult {
     combo: String,
@@ -23,9 +23,10 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
     let team_name = format!("Automated_Bot_Batch_{}", batch_id);
     println!("[SESSION] Spawning fresh incognito container context for: {}...", team_name);
 
+    // Fixed: Force both inserts to use &str lifetimes to align types cleanly
     let mut startup_token = HashMap::new();
     startup_token.insert("action", "set_name");
-    startup_token.insert("name", team_name);
+    startup_token.insert("name", team_name.as_str());
 
     client.post(url).form(&startup_token).send().await?;
     Ok(client)
@@ -68,7 +69,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let target_url: &str = &args[1];
     
-    // Parse the optional rate limiting flag
     let mut delay_ms: u64 = 0;
     if let Some(idx) = args.iter().position(|x| x == "--delay") {
         if idx + 1 < args.len() {
@@ -83,11 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let p_c = vec!["0".to_string(), "1".to_string(), "2".to_string()];
     let p_d = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
 
-    // Generate the exact combination suites we want to run
     let mut combinations_to_test = Vec::new();
     let max_len = p_a.len().max(p_b.len()).max(p_c.len()).max(p_d.len());
     
-    // Suite 1: Pairwise array definitions
+    // Suite 1: Pairwise configurations
     for i in 0..(max_len * max_len) {
         let a = p_a[(i / max_len) % p_a.len()].clone();
         let b = p_b[i % p_b.len()].clone();
@@ -96,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         combinations_to_test.push((a, b, c, d, "Pairwise Matrix Rule".to_string()));
     }
 
-    // Suite 2: Deep profiling augmentations
+    // Suite 2: Discovered multi-way variants
     for a in &p_a {
         for b in &p_b {
             for c in &p_c {
@@ -113,7 +112,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Process our test cases through session-managed blocks
     let mut test_results: Vec<TestResult> = Vec::new();
     let mut current_batch = 1;
     let mut current_client = create_authenticated_session(target_url, current_batch).await?;
@@ -122,19 +120,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running matrix audit with auto-cookie session rotation...");
 
     for (a, b, c, d, rule_label) in combinations_to_test {
-        // Rotate the session if we reach our 9-attempt window limit
-        if session_attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
-            current_batch += 1;
-            current_client = create_authenticated_session(target_url, current_batch).await?;
-            session_attempt_counter = 0;
-        }
-
         let body = submit_and_open_combo(&current_client, target_url, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await?;
         session_attempt_counter += 1;
         
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        // Strict checking: evaluate only the single live frame result
         let document = Html::parse_document(&body);
         let mut matched_status = String::new();
 
@@ -156,9 +146,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if matched_status == "BUG_FOUND" {
             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: rule_label });
         }
+
+        // Fixed: If we just performed the 10th attempt, clear cookies immediately before starting the next combination loop
+        if session_attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
+            current_batch += 1;
+            current_client = create_authenticated_session(target_url, current_batch).await?;
+            session_attempt_counter = 0;
+        }
     }
 
-    // Write final summary log
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Production Safe Cracking Verification Matrix Report")?;
     writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics |")?;
