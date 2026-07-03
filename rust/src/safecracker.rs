@@ -18,194 +18,153 @@ struct TestResult {
     latency_ms: u128, payload_bytes: usize, http_status: String,
 }
 
-async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
+async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<(Client, String), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::builder().cookie_store(true).build()?;
-    let team_name = format!("Parallel_Bot_Batch_{}", batch_id);
-    println!("[SESSION] Spawning fresh incognito container context for: {}...", team_name);
+    let name = format!("Parallel_Bot_B{}", batch_id); // Shorter, reliable session name
+    println!("[SESSION] Starting isolated worker context: {}", name);
 
-    let mut startup_token = HashMap::new();
-    startup_token.insert("action", "set_name");
-    startup_token.insert("name", team_name.as_str());
+    let mut token = HashMap::new();
+    token.insert("action", "set_name");
+    token.insert("name", name.as_str());
 
-    let mut retry_count = 0;
+    let mut retries = 0;
     loop {
-        match client.post(url).form(&startup_token).send().await {
-            Ok(_) => break,
-            Err(e) => {
-                retry_count += 1;
-                if retry_count >= MAX_RETRIES { return Err(Box::new(e)); }
-                sleep(Duration::from_secs(1)).await;
-            }
-        }
+        if client.post(url).form(&token).send().await.is_ok() { break; }
+        retries += 1;
+        if retries >= MAX_RETRIES { return Err("Session registration failed".into()); }
+        sleep(Duration::from_secs(1)).await;
     }
-    Ok(client)
+    Ok((client, name))
 }
 
-async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<(String, String, u128), reqwest::Error> {
-    let start_time = Instant::now();
-    let reset_parameters = vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")];
-    for (param, value) in reset_parameters {
-        let mut reset_form = HashMap::new();
-        reset_form.insert("action", "select".to_string());
-        reset_form.insert("param", param.to_string());
-        reset_form.insert("value", value.to_string());
-        let _ = client.post(url).form(&reset_form).send().await;
+async fn submit_and_open_combo(client: &Client, url: &str, a: &str, b: &str, c: &str, d: &str, delay: u64) -> Result<(String, String, u128), reqwest::Error> {
+    let start = Instant::now();
+    
+    // Step 1: Enforce baseline reset
+    for (p, v) in vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")] {
+        let mut form = HashMap::new();
+        form.insert("action", "select"); form.insert("param", p); form.insert("value", v);
+        let _ = client.post(url).form(&form).send().await;
     }
 
-    let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
-    for (param, value) in parameters {
-        if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
+    // Step 2: Input target values
+    for (p, v) in vec![("A", a), ("B", b), ("C", c), ("D", d)] {
+        if delay > 0 { sleep(Duration::from_millis(delay)).await; }
         let mut form = HashMap::new();
-        form.insert("action", "select".to_string());
-        form.insert("param", param.to_string());
-        form.insert("value", value);
-
-        let mut retry_count = 0;
+        form.insert("action", "select"); form.insert("param", p); form.insert("value", v);
+        
+        let mut r = 0;
         loop {
-            match client.post(url).form(&form).send().await {
-                Ok(_) => break,
-                Err(e) => {
-                    retry_count += 1;
-                    if retry_count >= MAX_RETRIES { return Err(e); }
-                    sleep(Duration::from_secs(1)).await;
-                }
-            }
+            if client.post(url).form(&form).send().await.is_ok() { break; }
+            r += 1; if r >= MAX_RETRIES { break; }
+            sleep(Duration::from_millis(500)).await;
         }
     }
 
-    if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
-    let mut attempt_form = HashMap::new();
-    attempt_form.insert("action", "add_attempt".to_string());
+    if delay > 0 { sleep(Duration::from_millis(delay)).await; }
+    let mut open_form = HashMap::new();
+    open_form.insert("action", "add_attempt");
 
-    let mut retry_count = 0;
-    let (final_body, status_str) = loop {
-        match client.post(url).form(&attempt_form).send().await {
+    let mut r = 0;
+    let (body, status) = loop {
+        match client.post(url).form(&open_form).send().await {
             Ok(res) => {
-                let status_code = res.status().to_string();
-                match res.text().await {
-                    Ok(text) => break (text, status_code),
-                    Err(e) => return Err(e),
-                }
+                let code = res.status().to_string();
+                if let Ok(txt) = res.text().await { break (txt, code); }
             },
-            Err(e) => {
-                retry_count += 1;
-                if retry_count >= MAX_RETRIES { return Err(e); }
-                sleep(Duration::from_secs(1)).await;
+            Err(_) => {
+                r += 1; if r >= MAX_RETRIES { break ("".to_string(), "500".to_string()); }
+                sleep(Duration::from_millis(500)).await;
             }
         }
     };
 
-    Ok((final_body, status_str, start_time.elapsed().as_millis()))
+    Ok((body, status, start.elapsed().as_millis()))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: cargo run --bin safecracker <TARGET_URL> [--delay <ms>]");
-        std::process::exit(1);
-    }
-    let target_url: &str = &args[1];
+    if args.len() < 2 { std::process::exit(1); }
+    let target_url = &args[1];
     
     let mut delay_ms: u64 = 0;
-    for arg in &args {
-        if arg.starts_with("--delay=") {
-            if let Some(val_str) = arg.split('=').nth(1) { delay_ms = val_str.parse().unwrap_or(0); }
-        }
-    }
-    if delay_ms == 0 {
-        if let Some(idx) = args.iter().position(|x| x == "--delay") {
-            if idx + 1 < args.len() { delay_ms = args[idx + 1].parse().unwrap_or(0); }
-        }
+    if let Some(idx) = args.iter().position(|x| x == "--delay") {
+        if idx + 1 < args.len() { delay_ms = args[idx + 1].parse().unwrap_or(0); }
     }
 
-    if delay_ms > 0 {
-        println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
-    } else {
-        println!("[CONFIG] Warning: No throttling delay active. Running at full concurrent network speed.");
-    }
+    let p_a = vec!["red", "green", "blue"];
+    let p_b = vec!["left", "middle", "right"];
+    let p_c = vec!["0", "1", "2"];
+    let p_d = vec!["alpha", "beta", "gamma"];
 
-    println!("Connecting to target sequence engine: {}...", target_url);
-
-    let p_a = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
-    let p_b = vec!["left".to_string(), "middle".to_string(), "right".to_string()];
-    let p_c = vec!["0".to_string(), "1".to_string(), "2".to_string()];
-    let p_d = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
-
-    let mut combinations_to_test = Vec::new();
+    let mut test_cases = Vec::new();
     let max_len = p_a.len().max(p_b.len()).max(p_c.len()).max(p_d.len());
     
     for i in 0..(max_len * max_len) {
-        let a = p_a[(i / max_len) % p_a.len()].clone();
-        let b = p_b[i % p_b.len()].clone();
-        let c = p_c[(i / max_len) % p_c.len()].clone();
-        let d = p_d[((i / max_len) + (i % max_len)) % p_d.len()].clone();
-        combinations_to_test.push((a, b, c, d, "Pairwise Matrix Rule".to_string()));
+        let a = p_a[(i / max_len) % p_a.len()];
+        let b = p_b[i % p_b.len()];
+        let c = p_c[(i / max_len) % p_c.len()];
+        let d = p_d[((i / max_len) + (i % max_len)) % p_d.len()];
+        test_cases.push((a, b, c, d, "Pairwise Matrix Rule".to_string()));
     }
 
     for a in &p_a {
         for b in &p_b {
             for c in &p_c {
                 for d in &p_d {
-                    let is_three_way = a != "red" && b == "right" && d == "alpha";
-                    let is_four_way = a == "red" && b == "right" && c == "2" && d == "gamma";
-                    if is_three_way || is_four_way {
-                        let label = if is_three_way { "Augmented: 3-Way Core Interaction" } else { "Augmented: Strict 4-Way Glitch" };
-                        combinations_to_test.push((a.clone(), b.clone(), c.clone(), d.clone(), label.to_string()));
+                    let is_3w = a != &"red" && b == &"right" && d == &"alpha";
+                    let is_4w = a == &"red" && b == &"right" && c == &"2" && d == &"gamma";
+                    if is_3w || is_4w {
+                        let lbl = if is_3w { "Augmented: 3-Way Core Interaction" } else { "Augmented: Strict 4-Way Glitch" };
+                        test_cases.push((a, b, c, d, lbl.to_string()));
                     }
                 }
             }
         }
     }
 
-    let chunks: Vec<Vec<(String, String, String, String, String)>> = combinations_to_test
-        .chunks(MAX_ATTEMPTS_PER_SESSION).map(|chunk| chunk.to_vec()).collect();
-
-    let total_worker_threads = chunks.len();
-    println!("[CONCURRENCY] Segmented matrix execution space into {} parallel worker scopes.", total_worker_threads);
+    let chunks: Vec<Vec<(&str, &str, &str, &str, String)>> = test_cases
+        .chunks(MAX_ATTEMPTS_PER_SESSION).map(|c| c.to_vec()).collect();
 
     let (tx, mut rx) = mpsc::channel::<TestResult>(100);
-    let target_url_string = target_url.to_string();
+    let url_str = target_url.to_string();
 
     for (batch_idx, chunk) in chunks.into_iter().enumerate() {
         let worker_tx = tx.clone();
-        let url_clone = target_url_string.clone();
+        let url_clone = url_str.clone();
         let batch_id = batch_idx + 1;
 
         tokio::spawn(async move {
-            if let Ok(client) = create_authenticated_session(&url_clone, batch_id).await {
+            if let Ok((client, _)) = create_authenticated_session(&url_clone, batch_id).await {
                 for (a, b, c, d, rule_label) in chunk {
-                    if let Ok((body, status_code, latency)) = submit_and_open_combo(&client, &url_clone, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await {
+                    if let Ok((body, status_code, latency)) = submit_and_open_combo(&client, &url_clone, a, b, c, d, delay_ms).await {
                         let combo = format!("{} | {} | {} | {}", a, b, c, d);
-                        let payload_size = body.len();
-                        
-                        let mut matched_status = "SECURELY_LOCKED".to_string();
-                        let mut diagnostic_details = "Safe remained locked".to_string();
+                        let size = body.len();
+                        let mut status = "SECURELY_LOCKED".to_string();
+                        let mut details = "Safe remained locked".to_string();
 
-                        // Fixed: Isolated scope ensuring the non-Send Selector variables are completely dropped before `.await`
                         {
-                            let document = Html::parse_document(&body);
-                            if let Ok(selector) = Selector::parse(".display") {
-                                for element in document.select(&selector) {
-                                    let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
-                                    if !inner_text.contains("closed") {
+                            let doc = Html::parse_document(&body);
+                            if let Ok(sel) = Selector::parse(".display") {
+                                for el in doc.select(&sel) {
+                                    let txt = el.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                                    if !txt.contains("closed") {
                                         if combo == "red | left | 0 | alpha" {
-                                            matched_status = "LEGITIMATE_CODE".to_string();
-                                            diagnostic_details = "Authorized standard route".to_string();
+                                            status = "LEGITIMATE_CODE".to_string();
+                                            details = "Authorized standard route".to_string();
                                         } else {
-                                            matched_status = "BUG_FOUND".to_string();
-                                            diagnostic_details = rule_label.clone();
+                                            status = "BUG_FOUND".to_string();
+                                            details = rule_label.clone();
                                         }
                                     }
                                 }
                             }
                         }
 
-                        let result_payload = TestResult {
-                            combo, status: matched_status, details: diagnostic_details,
-                            latency_ms: latency, payload_bytes: payload_size, http_status: status_code,
-                        };
-                        let _ = worker_tx.send(result_payload).await;
+                        let _ = worker_tx.send(TestResult {
+                            combo, status, details, latency_ms: latency, payload_bytes: size, http_status: status_code,
+                        }).await;
                     }
                 }
             }
@@ -213,18 +172,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     drop(tx);
-    let mut final_execution_logs: Vec<TestResult> = Vec::new();
-    println!("[SYSTEM] Collecting incoming asynchronous metrics trace objects...");
-    while let Some(res) = rx.recv().await { final_execution_logs.push(res); }
+    let mut logs = Vec::new();
+    while let Some(res) = rx.recv().await { logs.push(res); }
 
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Thread-Parallel Report")?;
-    writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics | Latency | Size | HTTP |")?;
+    writeln!(file, "\n| Combination Profile (A, B, C, D) | Status | Diagnostics | Latency | Size | HTTP |")?;
     writeln!(file, "| :--- | :--- | :--- | :--- | :--- | :--- |")?;
-    for res in final_execution_logs {
-        writeln!(file, "| **{}** | `{}` | {} | {}ms | {} B | `{}` |", res.combo, res.status, res.details, res.latency_ms, res.payload_bytes, res.http_status)?;
+    for r in logs {
+        writeln!(file, "| **{}** | `{}` | {} | {}ms | {} B | `{}` |", r.combo, r.status, r.details, r.latency_ms, r.payload_bytes, r.http_status)?;
     }
-
-    println!("Verification sweep complete! Multi-threaded execution metrics stored in: {}", REPORT_FILE);
+    println!("Sweep complete! Results written cleanly to: {}", REPORT_FILE);
     Ok(())
 }
+
