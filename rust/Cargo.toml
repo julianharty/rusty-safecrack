@@ -4,11 +4,11 @@ path = "src/safecracker.rs"
 
 [package]
 name = "safecracker-automation"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["cookies"] }
 scraper = "0.18"
 
