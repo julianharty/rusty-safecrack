@@ -66,9 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url: &str = &args;
+    // Fixed: Explicitly extract the specific URL slice string component out of the arguments index array
+    let target_url: &str = &args[1];
     
-    // Fixed: Smart argument parsing that handles both "--delay 200" and "--delay=200"
     let mut delay_ms: u64 = 0;
     for arg in &args {
         if arg.starts_with("--delay=") {
