@@ -51,10 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[DEBUG] Saved original landing file to ./debug_landing_page.html");
     }
     
-    // Act: Submit standard gate credentials
+    // Act: Submit the precise keys dictated by the hidden form layout
     let mut startup_token = HashMap::new();
+    startup_token.insert("action", "set_name");
     startup_token.insert("name", "Automated Combinatorial Rust Tool");
-    startup_token.insert("submit", "Start");
 
     println!("Submitting session registration sequence payload...");
     let login_res = client.post(target_url)
