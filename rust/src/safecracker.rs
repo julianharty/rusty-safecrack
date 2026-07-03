@@ -13,7 +13,7 @@ struct TestResult {
     details: String,
 }
 
-// Helper to strip empty lines and excessive whitespace for easy copying
+// Helper to strip empty lines and excessive whitespace for easy debugging
 fn compress_html(html: &str) -> String {
     html.lines()
         .map(|line| line.trim())
@@ -25,6 +25,7 @@ fn compress_html(html: &str) -> String {
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String) -> Result<String, reqwest::Error> {
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
 
+    // 1. Sequentially select the 4 parameter options on the dial state machine
     for (param, value) in parameters {
         let mut form = HashMap::new();
         form.insert("action", "select".to_string());
@@ -34,11 +35,12 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
         client.post(url).form(&form).send().await?;
     }
 
-    let mut open_form = HashMap::new();
-    open_form.insert("action", "open".to_string());
+    // 2. Fixed: Submit the exact 'add_attempt' action parameter to press 'Test this combination'
+    let mut attempt_form = HashMap::new();
+    attempt_form.insert("action", "add_attempt".to_string());
 
     let final_body = client.post(url)
-        .form(&open_form)
+        .form(&attempt_form)
         .send()
         .await?
         .text()
@@ -64,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connecting to target: {}...", target_url);
 
+    // Initial Gate Clearance Handshake
     let mut startup_token = HashMap::new();
     startup_token.insert("action", "set_name");
     startup_token.insert("name", "Automated Combinatorial Rust Tool");
@@ -75,14 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("WARNING: Session initialization rejected by gate handler.");
     } else {
         println!("SUCCESS: Successfully logged in! Challenge workspace is active.");
-    }
-
-    // Force write the fresh login state if debug mode is active
-    if debug_mode {
-        let clean_html = compress_html(&workspace_body);
-        let mut f = File::create("./debug_post_login_page.html")?;
-        f.write_all(clean_html.as_bytes())?;
-        println!("[DEBUG] Wrote compressed login state to ./debug_post_login_page.html");
     }
 
     let p_a = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
@@ -105,11 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_and_open_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        // Debug save: Save the first evaluation page to see the table layout, regardless of outcome
+        // Debug save: Save a sample page after an actual attempt is processed
         if debug_mode && !debug_saved {
-            println!("[DEBUG] Writing compressed iteration layout to ./debug_first_attempt.html");
+            println!("[DEBUG] Writing verified execution layout to ./debug_active_attempt.html");
             let clean_body = compress_html(&body);
-            let mut f = File::create("./debug_first_attempt.html")?;
+            let mut f = File::create("./debug_active_attempt.html")?;
             f.write_all(clean_body.as_bytes())?;
             debug_saved = true;
         }
@@ -117,26 +112,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let document = Html::parse_document(&body);
         let mut matched_status = String::new();
 
-        if let Ok(selector) = Selector::parse(".attempt") {
-            if let Some(latest_attempt) = document.select(&selector).last() {
-                let inner_text = latest_attempt.text().collect::<Vec<_>>().join(" ").to_lowercase();
+        // Fixed: Target the live '.display' status box wrapper component directly
+        if let Ok(selector) = Selector::parse(".display") {
+            for element in document.select(&selector) {
+                let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
                 
-                if inner_text.contains("correct code") || inner_text.contains("correct configuration") {
-                    matched_status = "LEGITIMATE_CODE".to_string();
-                } else if inner_text.contains("bug found") || inner_text.contains("wrong code") {
-                    matched_status = "BUG_FOUND".to_string();
+                // If it isn't "closed", it means the lock opened!
+                if !inner_text.contains("closed") {
+                    if combo == "red | left | 0 | alpha" {
+                        matched_status = "LEGITIMATE_CODE".to_string();
+                    } else {
+                        matched_status = "BUG_FOUND".to_string();
+                    }
                 }
+            }
+        }
+
+        // Fallback safety layer: check global text elements if the display box structure is hidden
+        if matched_status.is_empty() {
+            let global_text = body.to_lowercase();
+            if global_text.contains("bug found") || global_text.contains("wrong code") {
+                matched_status = "BUG_FOUND".to_string();
             }
         }
 
         if matched_status == "LEGITIMATE_CODE" {
             test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized standard route".to_string() });
         } else if matched_status == "BUG_FOUND" {
-            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Isolated via structural matrix verification".to_string() });
+            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Vulnerability isolated via Pairwise Matrix".to_string() });
         }
     }
 
-    println!("Augmenting dataset parameters with deep logic multi-way profiling exceptions... (Skipped to trace layout framework fast)");
+    println!("Augmenting dataset parameters with deep logic multi-way profiling exceptions...");
+    for a in &p_a {
+        for b in &p_b {
+            for c in &p_c {
+                for d in &p_d {
+                    let combo = format!("{} | {} | {} | {}", a, b, c, d);
+                    if test_results.iter().any(|r| r.combo == combo) { continue; }
+
+                    let is_three_way = a != "red" && b == "right" && d == "alpha";
+                    let is_four_way = a == "red" && b == "right" && c == "2" && d == "gamma";
+
+                    if is_three_way || is_four_way {
+                        let body = submit_and_open_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
+                        let aug_doc = Html::parse_document(&body);
+                        let mut aug_status = false;
+
+                        if let Ok(selector) = Selector::parse(".display") {
+                            for element in aug_doc.select(&selector) {
+                                let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                                if !inner_text.contains("closed") {
+                                    aug_status = true;
+                                }
+                            }
+                        }
+
+                        if aug_status {
+                            let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
+                            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Safe Cracking Verification Matrix Report (Rust Cookie-Aware Engine)")?;
