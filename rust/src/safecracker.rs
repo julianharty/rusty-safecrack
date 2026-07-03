@@ -13,12 +13,35 @@ struct TestResult {
     details: String,
 }
 
+// 1. Fixed: Extracted helper into a proper async function passing owned Strings
+async fn submit_combo(
+    client: &Client, 
+    a: String, 
+    b: String, 
+    c: String, 
+    d: String
+) -> Result<String, reqwest::Error> {
+    let mut form = HashMap::new();
+    form.insert("paramA", a);
+    form.insert("paramB", b);
+    form.insert("paramC", c);
+    form.insert("paramD", d);
+    form.insert("submit", "true".to_string());
+
+    client.post(TARGET_URL)
+        .form(&form)
+        .send()
+        .await?
+        .text()
+        .await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
     println!("Extracting parameter fields from live target...");
 
-    // 1. Arrange: Scrape dynamic dropdown values to generate runtime domain sets
+    // Scrape dynamic dropdown values to generate runtime domain sets
     let init_body = client.get(TARGET_URL).send().await?.text().await?;
     let document = Html::parse_document(&init_body);
 
@@ -38,19 +61,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut test_results: Vec<TestResult> = Vec::new();
 
-    // Closure tool to run explicit HTTP form submissions
-    let submit_combo = |client: &Client, a: &str, b: &str, c: &str, d: &str| async move {
-        let mut form = HashMap::new();
-        form.insert("paramA", a);
-        form.insert("paramB", b);
-        form.insert("paramC", c);
-        form.insert("paramD", d);
-        form.insert("submit", "true");
-
-        client.post(TARGET_URL).form(&form).send().await?.text().await
-    };
-
-    // 2. Act: Adaptive Hybrid Matrix Combinatorics
     let p_a = &param_space["paramA"];
     let p_b = &param_space["paramB"];
     let p_c = &param_space["paramC"];
@@ -65,7 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c = &p_c[(i / max_len) % p_c.len()];
         let d = &p_d[((i / max_len) + (i % max_len)) % p_d.len()];
 
-        let body = submit_combo(&client, a, b, c, d).await?.to_lowercase();
+        // 2. Fixed: Cloned values to guarantee owned lifespans across async calls
+        let body = submit_combo(&client, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
         if body.contains("correct configuration") || body.contains("correct code") {
@@ -87,7 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let is_four_way = a == "red" && b == "right" && c == "2" && d == "gamma";
 
                     if is_three_way || is_four_way {
-                        let body = submit_combo(&client, a, b, c, d).await?.to_lowercase();
+                        // 3. Fixed: Cloned values here as well
+                        let body = submit_combo(&client, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
                         if body.contains("bug found") || body.contains("safe opened") {
                             let label = if is_three_way { "3-Way Interaction Flagged" } else { "Strict 4-Way Target Corrupted" };
                             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
@@ -98,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 3. Assert: Output Document Assembly
+    // Output Document Assembly
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Safe Cracking Verification Matrix Report (Rust Engine)")?;
     writeln!(file, "\n## Isolated Vulnerability Manifest\n")?;
