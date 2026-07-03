@@ -14,19 +14,12 @@ const MAX_RETRIES: usize = 3;
 
 #[derive(Clone)]
 struct TestResult {
-    combo: String,
-    status: String,
-    details: String,
-    latency_ms: u128,
-    payload_bytes: usize,
-    http_status: String,
+    combo: String, status: String, details: String,
+    latency_ms: u128, payload_bytes: usize, http_status: String,
 }
 
 async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    let client = Client::builder()
-        .cookie_store(true)
-        .build()?;
-
+    let client = Client::builder().cookie_store(true).build()?;
     let team_name = format!("Parallel_Bot_Batch_{}", batch_id);
     println!("[SESSION] Spawning fresh incognito container context for: {}...", team_name);
 
@@ -50,7 +43,6 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
 
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<(String, String, u128), reqwest::Error> {
     let start_time = Instant::now();
-    
     let reset_parameters = vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")];
     for (param, value) in reset_parameters {
         let mut reset_form = HashMap::new();
@@ -63,7 +55,6 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
     for (param, value) in parameters {
         if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
-        
         let mut form = HashMap::new();
         form.insert("action", "select".to_string());
         form.insert("param", param.to_string());
@@ -104,8 +95,7 @@ async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String,
         }
     };
 
-    let total_latency = start_time.elapsed().as_millis();
-    Ok((final_body, status_str, total_latency))
+    Ok((final_body, status_str, start_time.elapsed().as_millis()))
 }
 
 #[tokio::main]
@@ -115,22 +105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Usage: cargo run --bin safecracker <TARGET_URL> [--delay <ms>]");
         std::process::exit(1);
     }
-    
     let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
     for arg in &args {
         if arg.starts_with("--delay=") {
-            if let Some(val_str) = arg.split('=').nth(1) {
-                delay_ms = val_str.parse().unwrap_or(0);
-            }
+            if let Some(val_str) = arg.split('=').nth(1) { delay_ms = val_str.parse().unwrap_or(0); }
         }
     }
     if delay_ms == 0 {
         if let Some(idx) = args.iter().position(|x| x == "--delay") {
-            if idx + 1 < args.len() {
-                delay_ms = args[idx + 1].parse().unwrap_or(0);
-            }
+            if idx + 1 < args.len() { delay_ms = args[idx + 1].parse().unwrap_or(0); }
         }
     }
 
@@ -164,7 +149,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for d in &p_d {
                     let is_three_way = a != "red" && b == "right" && d == "alpha";
                     let is_four_way = a == "red" && b == "right" && c == "2" && d == "gamma";
-                    
                     if is_three_way || is_four_way {
                         let label = if is_three_way { "Augmented: 3-Way Core Interaction" } else { "Augmented: Strict 4-Way Glitch" };
                         combinations_to_test.push((a.clone(), b.clone(), c.clone(), d.clone(), label.to_string()));
@@ -175,9 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let chunks: Vec<Vec<(String, String, String, String, String)>> = combinations_to_test
-        .chunks(MAX_ATTEMPTS_PER_SESSION)
-        .map(|chunk| chunk.to_vec())
-        .collect();
+        .chunks(MAX_ATTEMPTS_PER_SESSION).map(|chunk| chunk.to_vec()).collect();
 
     let total_worker_threads = chunks.len();
     println!("[CONCURRENCY] Segmented matrix execution space into {} parallel worker scopes.", total_worker_threads);
@@ -196,34 +178,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok((body, status_code, latency)) = submit_and_open_combo(&client, &url_clone, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await {
                         let combo = format!("{} | {} | {} | {}", a, b, c, d);
                         let payload_size = body.len();
-                        let document = Html::parse_document(&body);
+                        
                         let mut matched_status = "SECURELY_LOCKED".to_string();
                         let mut diagnostic_details = "Safe remained locked".to_string();
 
-                        if let Ok(selector) = Selector::parse(".display") {
-                            for element in document.select(&selector) {
-                                let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
-                                if !inner_text.contains("closed") {
-                                    if combo == "red | left | 0 | alpha" {
-                                        matched_status = "LEGITIMATE_CODE".to_string();
-                                        diagnostic_details = "Authorized standard route".to_string();
-                                    } else {
-                                        matched_status = "BUG_FOUND".to_string();
-                                        diagnostic_details = rule_label.clone();
+                        // Fixed: Isolated scope ensuring the non-Send Selector variables are completely dropped before `.await`
+                        {
+                            let document = Html::parse_document(&body);
+                            if let Ok(selector) = Selector::parse(".display") {
+                                for element in document.select(&selector) {
+                                    let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                                    if !inner_text.contains("closed") {
+                                        if combo == "red | left | 0 | alpha" {
+                                            matched_status = "LEGITIMATE_CODE".to_string();
+                                            diagnostic_details = "Authorized standard route".to_string();
+                                        } else {
+                                            matched_status = "BUG_FOUND".to_string();
+                                            diagnostic_details = rule_label.clone();
+                                        }
                                     }
                                 }
                             }
                         }
 
                         let result_payload = TestResult {
-                            combo,
-                            status: matched_status,
-                            details: diagnostic_details,
-                            latency_ms: latency,
-                            payload_bytes: payload_size,
-                            http_status: status_code,
+                            combo, status: matched_status, details: diagnostic_details,
+                            latency_ms: latency, payload_bytes: payload_size, http_status: status_code,
                         };
-
                         let _ = worker_tx.send(result_payload).await;
                     }
                 }
@@ -232,24 +213,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     drop(tx);
-
     let mut final_execution_logs: Vec<TestResult> = Vec::new();
     println!("[SYSTEM] Collecting incoming asynchronous metrics trace objects...");
-    while let Some(res) = rx.recv().await {
-        final_execution_logs.push(res);
-    }
+    while let Some(res) = rx.recv().await { final_execution_logs.push(res); }
 
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Thread-Parallel Report")?;
     writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics | Latency | Size | HTTP |")?;
     writeln!(file, "| :--- | :--- | :--- | :--- | :--- | :--- |")?;
-    
     for res in final_execution_logs {
-        writeln!(
-            file, 
-            "| **{}** | `{}` | {} | {}ms | {} B | `{}` |", 
-            res.combo, res.status, res.details, res.latency_ms, res.payload_bytes, res.http_status
-        )?;
+        writeln!(file, "| **{}** | `{}` | {} | {}ms | {} B | `{}` |", res.combo, res.status, res.details, res.latency_ms, res.payload_bytes, res.http_status)?;
     }
 
     println!("Verification sweep complete! Multi-threaded execution metrics stored in: {}", REPORT_FILE);
