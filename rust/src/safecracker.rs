@@ -7,7 +7,7 @@ use scraper::{Html, Selector};
 use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
-const MAX_ATTEMPTS_PER_SESSION: usize = 10; // Maximised to exactly 10 attempts per session block
+const MAX_ATTEMPTS_PER_SESSION: usize = 10; 
 
 struct TestResult {
     combo: String,
@@ -23,7 +23,6 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
     let team_name = format!("Automated_Bot_Batch_{}", batch_id);
     println!("[SESSION] Spawning fresh incognito container context for: {}...", team_name);
 
-    // Fixed: Force both inserts to use &str lifetimes to align types cleanly
     let mut startup_token = HashMap::new();
     startup_token.insert("action", "set_name");
     startup_token.insert("name", team_name.as_str());
@@ -67,13 +66,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url: &str = &args[1];
+    let target_url: &str = &args;
     
+    // Fixed: Smart argument parsing that handles both "--delay 200" and "--delay=200"
     let mut delay_ms: u64 = 0;
-    if let Some(idx) = args.iter().position(|x| x == "--delay") {
-        if idx + 1 < args.len() {
-            delay_ms = args[idx + 1].parse().unwrap_or(0);
+    for arg in &args {
+        if arg.starts_with("--delay=") {
+            if let Some(val_str) = arg.split('=').nth(1) {
+                delay_ms = val_str.parse().unwrap_or(0);
+            }
         }
+    }
+    if delay_ms == 0 {
+        if let Some(idx) = args.iter().position(|x| x == "--delay") {
+            if idx + 1 < args.len() {
+                delay_ms = args[idx + 1].parse().unwrap_or(0);
+            }
+        }
+    }
+
+    if delay_ms > 0 {
+        println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
+    } else {
+        println!("[CONFIG] Warning: No throttling delay active. Running at full network speed.");
     }
 
     println!("Connecting to target sequence engine: {}...", target_url);
@@ -86,7 +101,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut combinations_to_test = Vec::new();
     let max_len = p_a.len().max(p_b.len()).max(p_c.len()).max(p_d.len());
     
-    // Suite 1: Pairwise configurations
     for i in 0..(max_len * max_len) {
         let a = p_a[(i / max_len) % p_a.len()].clone();
         let b = p_b[i % p_b.len()].clone();
@@ -95,7 +109,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         combinations_to_test.push((a, b, c, d, "Pairwise Matrix Rule".to_string()));
     }
 
-    // Suite 2: Discovered multi-way variants
     for a in &p_a {
         for b in &p_b {
             for c in &p_c {
@@ -124,7 +137,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_attempt_counter += 1;
         
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
-
         let document = Html::parse_document(&body);
         let mut matched_status = String::new();
 
@@ -147,7 +159,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: rule_label });
         }
 
-        // Fixed: If we just performed the 10th attempt, clear cookies immediately before starting the next combination loop
         if session_attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
             current_batch += 1;
             current_client = create_authenticated_session(target_url, current_batch).await?;
