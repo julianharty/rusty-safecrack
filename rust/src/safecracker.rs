@@ -31,7 +31,9 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
-    let target_url: &str = &args;
+    
+    // Fixed: Explicitly binding index 1 string slice to clear type conversion issues
+    let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
     if let Some(idx) = args.iter().position(|x| x == "--delay") {
@@ -97,7 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 form.insert("param", param);
                 form.insert("value", target_val);
                 
-                // Fixed: Await the network response text before moving to the next parameter
                 let res = client.post(target_url).form(&form).send().await;
                 if let Ok(response) = res {
                     let _ = response.text().await;
