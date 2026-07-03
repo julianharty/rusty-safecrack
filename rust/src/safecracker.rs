@@ -26,7 +26,6 @@ async fn submit_combo(client: &Client, url: &str, a: String, b: String, c: Strin
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Collect the dynamic target URL from command line arguments
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Error: Missing target URL.");
@@ -39,12 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cookie_store(true)
         .build()?;
 
-    println!("Connecting to target: {} ...", target_url);
+    println!("Connecting to target: {}...", target_url);
     
-    // Clear landing gate checkpoint
+    // Act: Submit the correct 'name' form key to pass through the landing gate
     let mut startup_token = HashMap::new();
-    startup_token.insert("student_name", "Automated Combinatorial Rust Tool");
-    startup_token.insert("team_name", "Automated Combinatorial Rust Tool");
+    startup_token.insert("name", "Automated Combinatorial Rust Tool");
     startup_token.insert("submit", "Start");
 
     client.post(target_url)
@@ -55,8 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Extracting functional workspace configuration values...");
     let workspace_body = client.get(target_url).send().await?.text().await?;
     
+    // Diagnostic trace log
     if workspace_body.contains("Student or team name") {
-        println!("WARNING: Session authentication failed. Check form fields or URL context.");
+        println!("WARNING: Session authentication failed. Still stuck on landing gate.");
+    } else {
+        println!("SUCCESS: Successfully logged in! Challenge workspace is active.");
     }
 
     let document = Html::parse_document(&workspace_body);
@@ -74,9 +75,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !options.is_empty() { param_space.insert(key.to_string(), options); }
     }
 
-    // Dynamic Fallback Matrix if scrape fails
+    // Dynamic Fallback Matrix if selectors are customized
     if param_space.is_empty() {
-        println!("Structural options elements not found. Proceeding with adaptive matrix space arrays...");
+        println!("Structural options elements not parsed. Proceeding with fallback parameters...");
         param_space.insert("paramA".to_string(), vec!["red".to_string(), "green".to_string(), "blue".to_string()]);
         param_space.insert("paramB".to_string(), vec!["left".to_string(), "middle".to_string(), "right".to_string()]);
         param_space.insert("paramC".to_string(), vec!["0".to_string(), "1".to_string(), "2".to_string()]);
