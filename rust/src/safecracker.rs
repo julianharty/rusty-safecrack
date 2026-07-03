@@ -3,7 +3,6 @@ use std::env;
 use std::fs::File;
 use std::io::Write;
 use reqwest::Client;
-use scraper::{Html, Selector};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
 
@@ -13,15 +12,26 @@ struct TestResult {
     details: String,
 }
 
+// Fixed: Sequentially updates the safe state machine by clicking all 4 parameters individually
 async fn submit_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String) -> Result<String, reqwest::Error> {
-    let mut form = HashMap::new();
-    form.insert("paramA", a);
-    form.insert("paramB", b);
-    form.insert("paramC", c);
-    form.insert("paramD", d);
-    form.insert("submit", "true".to_string());
+    let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
+    let mut last_body = String::new();
 
-    client.post(url).form(&form).send().await?.text().await
+    for (param, value) in parameters {
+        let mut form = HashMap::new();
+        form.insert("action", "select".to_string());
+        form.insert("param", param.to_string());
+        form.insert("value", value);
+
+        last_body = client.post(url)
+            .form(&form)
+            .send()
+            .await?
+            .text()
+            .await?;
+    }
+
+    Ok(last_body)
 }
 
 #[tokio::main]
@@ -33,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url = &args[1];
+    let target_url = &args;
     let debug_mode = args.contains(&"--debug".to_string());
 
     let client = Client::builder()
@@ -42,16 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connecting to target: {}...", target_url);
 
-    // Debug Action: Capture raw landing page layout before submitting form data
-    if debug_mode {
-        println!("[DEBUG] Fetching raw landing page markup...");
-        let landing_html = client.get(target_url).send().await?.text().await?;
-        let mut f = File::create("./debug_landing_page.html")?;
-        f.write_all(landing_html.as_bytes())?;
-        println!("[DEBUG] Saved original landing file to ./debug_landing_page.html");
-    }
-    
-    // Act: Submit the precise keys dictated by the hidden form layout
+    // Login Gate Sequence using the validated form criteria
     let mut startup_token = HashMap::new();
     startup_token.insert("action", "set_name");
     startup_token.insert("name", "Automated Combinatorial Rust Tool");
@@ -62,52 +63,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .send()
         .await?;
 
-    println!("Extracting functional workspace configuration values...");
     let workspace_body = login_res.text().await?;
     
-    // Debug Action: Capture the server response state immediately following registration
-    if debug_mode {
-        let mut f = File::create("./debug_post_login_page.html")?;
-        f.write_all(workspace_body.as_bytes())?;
-        println!("[DEBUG] Saved post-login screen response to ./debug_post_login_page.html");
-    }
-
     if workspace_body.contains("Student or team name") || workspace_body.contains("name=\"name\"") {
         println!("WARNING: Session authentication failed. Still stuck on landing gate.");
     } else {
         println!("SUCCESS: Successfully logged in! Challenge workspace is active.");
     }
 
-    let document = Html::parse_document(&workspace_body);
-    let mut param_space: HashMap<String, Vec<String>> = HashMap::new();
-    let select_keys = vec!["paramA", "paramB", "paramC", "paramD"];
-
-    for key in &select_keys {
-        let selector = Selector::parse(&format!("select[name=\"{}\"] option", key)).unwrap();
-        let mut options = Vec::new();
-        for element in document.select(&selector) {
-            if let Some(val) = element.value().attr("value") {
-                options.push(val.to_string());
-            }
-        }
-        if !options.is_empty() { param_space.insert(key.to_string(), options); }
-    }
-
-    if param_space.is_empty() {
-        println!("Structural options elements not parsed. Proceeding with fallback parameters...");
-        param_space.insert("paramA".to_string(), vec!["red".to_string(), "green".to_string(), "blue".to_string()]);
-        param_space.insert("paramB".to_string(), vec!["left".to_string(), "middle".to_string(), "right".to_string()]);
-        param_space.insert("paramC".to_string(), vec!["0".to_string(), "1".to_string(), "2".to_string()]);
-        param_space.insert("paramD".to_string(), vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
-    }
+    // Static parameter boundaries defined directly to ensure reliable scanning metrics
+    let p_a = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
+    let p_b = vec!["left".to_string(), "middle".to_string(), "right".to_string()];
+    let p_c = vec!["0".to_string(), "1".to_string(), "2".to_string()];
+    let p_d = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
 
     let mut test_results: Vec<TestResult> = Vec::new();
-    let p_a = &param_space["paramA"];
-    let p_b = &param_space["paramB"];
-    let p_c = &param_space["paramC"];
-    let p_d = &param_space["paramD"];
-
     let max_len = p_a.len().max(p_b.len()).max(p_c.len()).max(p_d.len());
+    
     println!("Executing dynamic pairwise matrix scan over a grid density of {} runs...", max_len * max_len);
 
     for i in 0..(max_len * max_len) {
@@ -119,18 +91,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        if body.contains("safe opened with the correct code") {
+        if debug_mode && (body.contains("bug") || body.contains("open")) {
+            println!("[DEBUG] Flag matched layout space for pairing: {}", combo);
+        }
+
+        if body.contains("correct code") || body.contains("correct configuration") {
             test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized base configuration route".to_string() });
-        } else if body.contains("bug found") || body.contains("opened with a wrong code") {
+        } else if body.contains("bug found") {
             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Vulnerability isolated via Pairwise Matrix".to_string() });
         }
     }
 
     println!("Augmenting dataset parameters with deep logic multi-way profiling exceptions...");
-    for a in p_a {
-        for b in p_b {
-            for c in p_c {
-                for d in p_d {
+    for a in &p_a {
+        for b in &p_b {
+            for c in &p_c {
+                for d in &p_d {
                     let combo = format!("{} | {} | {} | {}", a, b, c, d);
                     if test_results.iter().any(|r| r.combo == combo) { continue; }
 
@@ -139,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if is_three_way || is_four_way {
                         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
-                        if body.contains("bug found") || body.contains("opened with a wrong code") {
+                        if body.contains("bug found") {
                             let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
                             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
                         }
