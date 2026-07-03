@@ -5,6 +5,7 @@ use std::io::Write;
 use std::time::Instant;
 use reqwest::Client;
 use scraper::{Html, Selector};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
@@ -21,12 +22,12 @@ struct TestResult {
     http_status: String,
 }
 
-async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error>> {
+async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::builder()
         .cookie_store(true)
         .build()?;
 
-    let team_name = format!("Automated_Bot_Batch_{}", batch_id);
+    let team_name = format!("Parallel_Bot_Batch_{}", batch_id);
     println!("[SESSION] Spawning fresh incognito container context for: {}...", team_name);
 
     let mut startup_token = HashMap::new();
@@ -40,7 +41,6 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
             Err(e) => {
                 retry_count += 1;
                 if retry_count >= MAX_RETRIES { return Err(Box::new(e)); }
-                println!("[WARN] Connection failed during session creation. Retrying {}/{}...", retry_count, MAX_RETRIES);
                 sleep(Duration::from_secs(1)).await;
             }
         }
@@ -134,11 +134,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Restored: Clear console verification outputs detailing pacing configuration
     if delay_ms > 0 {
         println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
     } else {
-        println!("[CONFIG] Warning: No throttling delay active. Running at full network speed.");
+        println!("[CONFIG] Warning: No throttling delay active. Running at full concurrent network speed.");
     }
 
     println!("Connecting to target sequence engine: {}...", target_url);
@@ -175,60 +174,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut all_execution_logs: Vec<TestResult> = Vec::new();
-    let mut current_batch = 1;
-    let mut current_client = create_authenticated_session(target_url, current_batch).await?;
-    let mut session_attempt_counter = 0;
+    let chunks: Vec<Vec<(String, String, String, String, String)>> = combinations_to_test
+        .chunks(MAX_ATTEMPTS_PER_SESSION)
+        .map(|chunk| chunk.to_vec())
+        .collect();
 
-    println!("Running matrix audit with comprehensive verification logging...");
+    let total_worker_threads = chunks.len();
+    println!("[CONCURRENCY] Segmented matrix execution space into {} parallel worker scopes.", total_worker_threads);
 
-    for (a, b, c, d, rule_label) in combinations_to_test {
-        let (body, status_code, latency) = submit_and_open_combo(&current_client, target_url, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await?;
-        session_attempt_counter += 1;
-        
-        let combo = format!("{} | {} | {} | {}", a, b, c, d);
-        let payload_size = body.len();
-        let document = Html::parse_document(&body);
-        let mut matched_status = "SECURELY_LOCKED".to_string();
-        let mut diagnostic_details = "Safe remained locked".to_string();
+    let (tx, mut rx) = mpsc::channel::<TestResult>(100);
+    let target_url_string = target_url.to_string();
 
-        if let Ok(selector) = Selector::parse(".display") {
-            for element in document.select(&selector) {
-                let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
-                if !inner_text.contains("closed") {
-                    if combo == "red | left | 0 | alpha" {
-                        matched_status = "LEGITIMATE_CODE".to_string();
-                        diagnostic_details = "Authorized standard route".to_string();
-                    } else {
-                        matched_status = "BUG_FOUND".to_string();
-                        diagnostic_details = rule_label.clone();
+    for (batch_idx, chunk) in chunks.into_iter().enumerate() {
+        let worker_tx = tx.clone();
+        let url_clone = target_url_string.clone();
+        let batch_id = batch_idx + 1;
+
+        tokio::spawn(async move {
+            if let Ok(client) = create_authenticated_session(&url_clone, batch_id).await {
+                for (a, b, c, d, rule_label) in chunk {
+                    if let Ok((body, status_code, latency)) = submit_and_open_combo(&client, &url_clone, a.clone(), b.clone(), c.clone(), d.clone(), delay_ms).await {
+                        let combo = format!("{} | {} | {} | {}", a, b, c, d);
+                        let payload_size = body.len();
+                        let document = Html::parse_document(&body);
+                        let mut matched_status = "SECURELY_LOCKED".to_string();
+                        let mut diagnostic_details = "Safe remained locked".to_string();
+
+                        if let Ok(selector) = Selector::parse(".display") {
+                            for element in document.select(&selector) {
+                                let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                                if !inner_text.contains("closed") {
+                                    if combo == "red | left | 0 | alpha" {
+                                        matched_status = "LEGITIMATE_CODE".to_string();
+                                        diagnostic_details = "Authorized standard route".to_string();
+                                    } else {
+                                        matched_status = "BUG_FOUND".to_string();
+                                        diagnostic_details = rule_label.clone();
+                                    }
+                                }
+                            }
+                        }
+
+                        let result_payload = TestResult {
+                            combo,
+                            status: matched_status,
+                            details: diagnostic_details,
+                            latency_ms: latency,
+                            payload_bytes: payload_size,
+                            http_status: status_code,
+                        };
+
+                        let _ = worker_tx.send(result_payload).await;
                     }
                 }
             }
-        }
-
-        all_execution_logs.push(TestResult { 
-            combo, 
-            status: matched_status, 
-            details: diagnostic_details,
-            latency_ms: latency, 
-            payload_bytes: payload_size, 
-            http_status: status_code 
         });
+    }
 
-        if session_attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
-            current_batch += 1;
-            current_client = create_authenticated_session(target_url, current_batch).await?;
-            session_attempt_counter = 0;
-        }
+    drop(tx);
+
+    let mut final_execution_logs: Vec<TestResult> = Vec::new();
+    println!("[SYSTEM] Collecting incoming asynchronous metrics trace objects...");
+    while let Some(res) = rx.recv().await {
+        final_execution_logs.push(res);
     }
 
     let mut file = File::create(REPORT_FILE)?;
-    writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Verification Report")?;
+    writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Thread-Parallel Report")?;
     writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics | Latency | Size | HTTP |")?;
     writeln!(file, "| :--- | :--- | :--- | :--- | :--- | :--- |")?;
     
-    for res in all_execution_logs {
+    for res in final_execution_logs {
         writeln!(
             file, 
             "| **{}** | `{}` | {} | {}ms | {} B | `{}` |", 
@@ -236,7 +252,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
-    println!("Verification sweep complete. Exhaustive execution metrics cleanly stored in: {}", REPORT_FILE);
+    println!("Verification sweep complete! Multi-threaded execution metrics stored in: {}", REPORT_FILE);
     Ok(())
 }
-
