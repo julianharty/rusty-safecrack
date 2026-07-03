@@ -9,6 +9,7 @@ use tokio::time::{sleep, Duration};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
 const MAX_ATTEMPTS_PER_SESSION: usize = 10;
+const MAX_CLICK_RETRIES: usize = 3;
 
 struct TestResult {
     combo: String, status: String, details: String,
@@ -17,7 +18,7 @@ struct TestResult {
 
 async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::error::Error>> {
     let client = Client::builder().cookie_store(true).build()?;
-    let name = format!("Browser_Sim_B{}", id);
+    let name = format!("Verified_Browser_B{}", id);
     println!("[SESSION] Starting clean isolated 10-attempt window: {}", name);
 
     let mut token = HashMap::new();
@@ -27,12 +28,46 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
     Ok(client)
 }
 
+// Scrapes the returned page block to verify if a specific dial option is visibly selected
+fn verify_dial_state(html: &str, param: &str, expected_value: &str) -> bool {
+    let doc = Html::parse_document(html);
+    // Find choice forms matching the exact parameter and value criteria
+    if let Ok(selector) = Selector::parse(&format!("form.choice-form input[name=\"param\"][value=\"{}\"]", param)) {
+        for element in doc.select(&selector) {
+            if let Some(parent) = element.parent() {
+                // Find if the hidden sibling value matches our target expected string
+                let mut matches_value = false;
+                if let Ok(val_sel) = Selector::parse("input[name=\"value\"]") {
+                    if let Some(val_el) = parent.select(&val_sel).next() {
+                        if val_el.value().attr("value") == Some(expected_value) {
+                            matches_value = true;
+                        }
+                    }
+                }
+                // Check if the submission button contains the native active 'selected' class wrapper
+                if matches_value {
+                    if let Ok(btn_sel) = Selector::parse("button.choice") {
+                        if let Some(btn_el) = parent.select(&btn_sel).next() {
+                            if let Some(classes) = btn_el.value().attr("class") {
+                                if classes.contains("selected") {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
     
-    // Fixed: Explicitly binding index 1 string slice to clear type conversion issues
+    // Fixed: Explicit extraction of clean str reference to avoid Vec matching failures
     let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
@@ -78,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cur_a = "red"; let mut cur_b = "left"; let mut cur_c = "0"; let mut cur_d = "alpha";
 
-    println!("Running matrix sweep using Strict Synchronous Browser Simulation...");
+    println!("Running matrix sweep using Strict Verified Click Simulation...");
 
     for (a, b, c, d, label) in test_cases {
         if attempt_counter >= MAX_ATTEMPTS_PER_SESSION {
@@ -93,15 +128,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for (param, target_val, current_val) in targets {
             if target_val != *current_val {
-                if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
-                let mut form = HashMap::new();
-                form.insert("action", "select");
-                form.insert("param", param);
-                form.insert("value", target_val);
-                
-                let res = client.post(target_url).form(&form).send().await;
-                if let Ok(response) = res {
-                    let _ = response.text().await;
+                let mut click_retries = 0;
+                loop {
+                    if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)).await; }
+                    let mut form = HashMap::new();
+                    form.insert("action", "select");
+                    form.insert("param", param);
+                    form.insert("value", target_val);
+                    
+                    let res = client.post(target_url).form(&form).send().await;
+                    if let Ok(response) = res {
+                        if let Ok(html_content) = response.text().await {
+                            // Fixed: Strict validation check confirming if selection rendered visually
+                            if verify_dial_state(&html_content, param, target_val) {
+                                break; 
+                            }
+                        }
+                    }
+                    click_retries += 1;
+                    if click_retries >= MAX_CLICK_RETRIES {
+                        println!("[WARN] Dial parameter selection unverified after {} attempts. Continuing...", MAX_CLICK_RETRIES);
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await; // Short backoff recovery delay
                 }
                 *current_val = target_val;
             }
