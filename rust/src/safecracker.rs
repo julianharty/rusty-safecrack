@@ -13,6 +13,15 @@ struct TestResult {
     details: String,
 }
 
+// Helper to strip empty lines and excessive whitespace for easy copying
+fn compress_html(html: &str) -> String {
+    html.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String) -> Result<String, reqwest::Error> {
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
 
@@ -46,7 +55,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    // Fixed: Explicitly binding a clean reference string slice to index 1
     let target_url: &str = &args[1];
     let debug_mode = args.contains(&"--debug".to_string());
 
@@ -69,6 +77,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("SUCCESS: Successfully logged in! Challenge workspace is active.");
     }
 
+    // Force write the fresh login state if debug mode is active
+    if debug_mode {
+        let clean_html = compress_html(&workspace_body);
+        let mut f = File::create("./debug_post_login_page.html")?;
+        f.write_all(clean_html.as_bytes())?;
+        println!("[DEBUG] Wrote compressed login state to ./debug_post_login_page.html");
+    }
+
     let p_a = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
     let p_b = vec!["left".to_string(), "middle".to_string(), "right".to_string()];
     let p_c = vec!["0".to_string(), "1".to_string(), "2".to_string()];
@@ -89,6 +105,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_and_open_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
+        // Debug save: Save the first evaluation page to see the table layout, regardless of outcome
+        if debug_mode && !debug_saved {
+            println!("[DEBUG] Writing compressed iteration layout to ./debug_first_attempt.html");
+            let clean_body = compress_html(&body);
+            let mut f = File::create("./debug_first_attempt.html")?;
+            f.write_all(clean_body.as_bytes())?;
+            debug_saved = true;
+        }
+
         let document = Html::parse_document(&body);
         let mut matched_status = String::new();
 
@@ -100,13 +125,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     matched_status = "LEGITIMATE_CODE".to_string();
                 } else if inner_text.contains("bug found") || inner_text.contains("wrong code") {
                     matched_status = "BUG_FOUND".to_string();
-                    
-                    if debug_mode && !debug_saved {
-                        println!("[DEBUG] First live validation defect encountered! Storing markup...");
-                        let mut f = File::create("./debug_bug_found_state.html")?;
-                        f.write_all(body.as_bytes())?;
-                        debug_saved = true;
-                    }
                 }
             }
         }
@@ -118,40 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Augmenting dataset parameters with deep logic multi-way profiling exceptions...");
-    for a in &p_a {
-        for b in &p_b {
-            for c in &p_c {
-                for d in &p_d {
-                    let combo = format!("{} | {} | {} | {}", a, b, c, d);
-                    if test_results.iter().any(|r| r.combo == combo) { continue; }
-
-                    let is_three_way = a != "red" && b == "right" && d == "alpha";
-                    let is_four_way = a == "red" && b == "right" && c == "2" && d == "gamma";
-
-                    if is_three_way || is_four_way {
-                        let body = submit_and_open_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
-                        let aug_doc = Html::parse_document(&body);
-                        let mut aug_status = false;
-
-                        if let Ok(selector) = Selector::parse(".attempt") {
-                            if let Some(latest_attempt) = aug_doc.select(&selector).last() {
-                                let txt = latest_attempt.text().collect::<Vec<_>>().join(" ").to_lowercase();
-                                if txt.contains("bug found") || txt.contains("wrong code") {
-                                    aug_status = true;
-                                }
-                            }
-                        }
-
-                        if aug_status {
-                            let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
-                            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    println!("Augmenting dataset parameters with deep logic multi-way profiling exceptions... (Skipped to trace layout framework fast)");
 
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Safe Cracking Verification Matrix Report (Rust Cookie-Aware Engine)")?;
