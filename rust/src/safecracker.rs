@@ -3,6 +3,7 @@ use std::env;
 use std::fs::File;
 use std::io::Write;
 use reqwest::Client;
+use scraper::{Html, Selector};
 
 const REPORT_FILE: &str = "./safecrack_report.md";
 
@@ -42,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url = &args[1];
+    let target_url = &args;
     let debug_mode = args.contains(&"--debug".to_string());
 
     let client = Client::builder()
@@ -52,11 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connecting to target: {}...", target_url);
 
     if debug_mode {
-        println!("[DEBUG] Fetching raw landing page markup...");
         let landing_html = client.get(target_url).send().await?.text().await?;
         let mut f = File::create("./debug_landing_page.html")?;
         f.write_all(landing_html.as_bytes())?;
-        println!("[DEBUG] Saved original landing file to ./debug_landing_page.html");
     }
     
     let mut startup_token = HashMap::new();
@@ -74,7 +73,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if debug_mode {
         let mut f = File::create("./debug_post_login_page.html")?;
         f.write_all(workspace_body.as_bytes())?;
-        println!("[DEBUG] Saved post-login screen response to ./debug_post_login_page.html");
     }
 
     if workspace_body.contains("Student or team name") || workspace_body.contains("name=\"name\"") {
@@ -90,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut test_results: Vec<TestResult> = Vec::new();
     let max_len = p_a.len().max(p_b.len()).max(p_c.len()).max(p_d.len());
+    let mut debug_saved = false;
     
     println!("Executing dynamic pairwise matrix scan over a grid density of {} runs...", max_len * max_len);
 
@@ -99,14 +98,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c = &p_c[(i / max_len) % p_c.len()];
         let d = &p_d[((i / max_len) + (i % max_len)) % p_d.len()];
 
-        let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
+        let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        // Fixed: Strict evaluation targeting explicit action banner text states
-        if body.contains("opened with the correct code") {
-            test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized base configuration route".to_string() });
-        } else if body.contains("bug found") || body.contains("opened with a wrong code") {
-            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Vulnerability isolated via Pairwise Matrix".to_string() });
+        // Broad fallback check first to see if the page structurally changed
+        let text_lower = body.to_lowercase();
+        let looks_like_unlock = text_lower.contains("bug found") || text_lower.contains("opened");
+
+        if looks_like_unlock {
+            // Save the raw markup the very first time an active unlock indicator appears
+            if debug_mode && !debug_saved {
+                println!("[DEBUG] Active breakthrough condition hit! Writing raw frame template state...");
+                let mut f = File::create("./debug_bug_found_state.html")?;
+                f.write_all(body.as_bytes())?;
+                debug_saved = true;
+            }
+
+            // Parse HTML DOM structural banners to verify context and isolate current attempt alerts
+            let document = Html::parse_document(&body);
+            let mut matched_status = String::new();
+
+            // Check standard semantic class identifiers common to live execution frameworks
+            let diagnostic_selectors = vec![
+                ".status-message", ".alert", ".notification", "h2", ".bug-highlight", ".result"
+            ];
+
+            for sel_str in diagnostic_selectors {
+                if let Ok(selector) = Selector::parse(sel_str) {
+                    for element in document.select(&selector) {
+                        let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                        if inner_text.contains("correct code") || inner_text.contains("correct configuration") {
+                            matched_status = "LEGITIMATE_CODE".to_string();
+                            break;
+                        } else if inner_text.contains("bug found") || inner_text.contains("wrong code") {
+                            matched_status = "BUG_FOUND".to_string();
+                            break;
+                        }
+                    }
+                }
+                if !matched_status.is_empty() { break; }
+            }
+
+            // If fine selectors fail due to bespoke DOM structure, fall back to soft logging 
+            if matched_status.is_empty() {
+                if text_lower.contains("correct") {
+                    matched_status = "LEGITIMATE_CODE".to_string();
+                } else {
+                    matched_status = "BUG_FOUND".to_string();
+                }
+            }
+
+            if matched_status == "LEGITIMATE_CODE" {
+                test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized standard route".to_string() });
+            } else if matched_status == "BUG_FOUND" {
+                test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Isolated via structural matrix verification".to_string() });
+            }
         }
     }
 
@@ -122,9 +168,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let is_four_way = a == "red" && b == "right" && c == "2" && d == "gamma";
 
                     if is_three_way || is_four_way {
-                        let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
-                        // Fixed: Strict checking applied to augmentation sweep as well
-                        if body.contains("bug found") || body.contains("opened with a wrong code") {
+                        let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
+                        let text_lower = body.to_lowercase();
+
+                        if text_lower.contains("bug found") || text_lower.contains("wrong code") {
                             let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
                             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
                         }
