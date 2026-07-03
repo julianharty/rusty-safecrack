@@ -44,13 +44,13 @@ async fn create_authenticated_session(url: &str, batch_id: usize) -> Result<Clie
 }
 
 async fn submit_and_open_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String, delay_ms: u64) -> Result<String, reqwest::Error> {
-    // 1. New State Reset Logic: Force dials to a clean baseline before selecting target values
+    // 1. Fixed Reset Logic: Force dials back to baseline utilizing the right 'reset_form' map key identifier
     let reset_parameters = vec![("A", "red"), ("B", "left"), ("C", "0"), ("D", "alpha")];
     for (param, value) in reset_parameters {
         let mut reset_form = HashMap::new();
         reset_form.insert("action", "select".to_string());
         reset_form.insert("param", param.to_string());
-        form.insert("value", value.to_string());
+        reset_form.insert("value", value.to_string());
         let _ = client.post(url).form(&reset_form).send().await;
     }
 
@@ -107,7 +107,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url: &str = &args;
+    // Fixed: Explicitly bind index 1 slice data to clear type conversion problems
+    let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
     for arg in &args {
@@ -123,6 +124,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 delay_ms = args[idx + 1].parse().unwrap_or(0);
             }
         }
+    }
+
+    if delay_ms > 0 {
+        println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
+    } else {
+        println!("[CONFIG] Warning: No throttling delay active. Running at full network speed.");
     }
 
     println!("Connecting to target sequence engine: {}...", target_url);
