@@ -134,6 +134,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Restored: Clear console verification outputs detailing pacing configuration
+    if delay_ms > 0 {
+        println!("[CONFIG] Throttling verified: introduced a {}ms pacing interval.", delay_ms);
+    } else {
+        println!("[CONFIG] Warning: No throttling delay active. Running at full network speed.");
+    }
+
     println!("Connecting to target sequence engine: {}...", target_url);
 
     let p_a = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
@@ -200,7 +207,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Fixed: Record EVERY single attempt explicitly into the logs vector regardless of outcome
         all_execution_logs.push(TestResult { 
             combo, 
             status: matched_status, 
@@ -217,7 +223,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Write final structured comprehensive metrics artifact summary log
     let mut file = File::create(REPORT_FILE)?;
     writeln!(file, "# Production Safe Cracking Metrics & Comprehensive Verification Report")?;
     writeln!(file, "\n| Combination Variant Profile (A, B, C, D) | Evaluation Status | Mechanism Diagnostics | Latency | Size | HTTP |")?;
