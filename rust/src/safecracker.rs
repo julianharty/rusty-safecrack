@@ -43,7 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url = &args;
+    // Fixed: Correctly slice out the exact URL text index argument directly
+    let target_url = &args[1];
     let debug_mode = args.contains(&"--debug".to_string());
 
     let client = Client::builder()
@@ -101,58 +102,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        // Broad fallback check first to see if the page structurally changed
-        let text_lower = body.to_lowercase();
-        let looks_like_unlock = text_lower.contains("bug found") || text_lower.contains("opened");
+        // Check the local context inside the .safe component frame to protect against historical log noise
+        let document = Html::parse_document(&body);
+        let mut matched_status = String::new();
 
-        if looks_like_unlock {
-            // Save the raw markup the very first time an active unlock indicator appears
-            if debug_mode && !debug_saved {
-                println!("[DEBUG] Active breakthrough condition hit! Writing raw frame template state...");
-                let mut f = File::create("./debug_bug_found_state.html")?;
-                f.write_all(body.as_bytes())?;
-                debug_saved = true;
-            }
-
-            // Parse HTML DOM structural banners to verify context and isolate current attempt alerts
-            let document = Html::parse_document(&body);
-            let mut matched_status = String::new();
-
-            // Check standard semantic class identifiers common to live execution frameworks
-            let diagnostic_selectors = vec![
-                ".status-message", ".alert", ".notification", "h2", ".bug-highlight", ".result"
-            ];
-
-            for sel_str in diagnostic_selectors {
-                if let Ok(selector) = Selector::parse(sel_str) {
-                    for element in document.select(&selector) {
-                        let inner_text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
-                        if inner_text.contains("correct code") || inner_text.contains("correct configuration") {
-                            matched_status = "LEGITIMATE_CODE".to_string();
-                            break;
-                        } else if inner_text.contains("bug found") || inner_text.contains("wrong code") {
-                            matched_status = "BUG_FOUND".to_string();
-                            break;
-                        }
+        // Target solely the interactive UI element block wrapper
+        if let Ok(safe_selector) = Selector::parse(".safe") {
+            for safe_element in document.select(&safe_selector) {
+                let safe_inner_text = safe_element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                
+                if safe_inner_text.contains("opened with the correct code") {
+                    matched_status = "LEGITIMATE_CODE".to_string();
+                } else if safe_inner_text.contains("bug found") || safe_inner_text.contains("wrong code") {
+                    matched_status = "BUG_FOUND".to_string();
+                    
+                    // Capture the debug file snapshot the very first time an active bug is isolated
+                    if debug_mode && !debug_saved {
+                        println!("[DEBUG] First live execution bug hit inside interactive workspace! Writing output markup...");
+                        let mut f = File::create("./debug_bug_found_state.html")?;
+                        f.write_all(body.as_bytes())?;
+                        debug_saved = true;
                     }
                 }
-                if !matched_status.is_empty() { break; }
             }
+        }
 
-            // If fine selectors fail due to bespoke DOM structure, fall back to soft logging 
-            if matched_status.is_empty() {
-                if text_lower.contains("correct") {
-                    matched_status = "LEGITIMATE_CODE".to_string();
-                } else {
-                    matched_status = "BUG_FOUND".to_string();
-                }
-            }
-
-            if matched_status == "LEGITIMATE_CODE" {
-                test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized standard route".to_string() });
-            } else if matched_status == "BUG_FOUND" {
-                test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Isolated via structural matrix verification".to_string() });
-            }
+        if matched_status == "LEGITIMATE_CODE" {
+            test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized standard route".to_string() });
+        } else if matched_status == "BUG_FOUND" {
+            test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Isolated via structural matrix verification".to_string() });
         }
     }
 
@@ -169,9 +147,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if is_three_way || is_four_way {
                         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?;
-                        let text_lower = body.to_lowercase();
+                        let aug_doc = Html::parse_document(&body);
+                        let mut aug_status = false;
 
-                        if text_lower.contains("bug found") || text_lower.contains("wrong code") {
+                        if let Ok(safe_selector) = Selector::parse(".safe") {
+                            for safe_element in aug_doc.select(&safe_selector) {
+                                let txt = safe_element.text().collect::<Vec<_>>().join(" ").to_lowercase();
+                                if txt.contains("bug found") || txt.contains("wrong code") {
+                                    aug_status = true;
+                                }
+                            }
+                        }
+
+                        if aug_status {
                             let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
                             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
                         }
