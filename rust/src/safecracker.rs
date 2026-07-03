@@ -12,7 +12,6 @@ struct TestResult {
     details: String,
 }
 
-// Fixed: Sequentially updates the safe state machine by clicking all 4 parameters individually
 async fn submit_combo(client: &Client, url: &str, a: String, b: String, c: String, d: String) -> Result<String, reqwest::Error> {
     let parameters = vec![("A", a), ("B", b), ("C", c), ("D", d)];
     let mut last_body = String::new();
@@ -43,7 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     
-    let target_url = &args;
+    // Fixed: Pulling out the specific string slice at index 1 instead of passing the whole Vec reference
+    let target_url = &args[1];
     let debug_mode = args.contains(&"--debug".to_string());
 
     let client = Client::builder()
@@ -52,7 +52,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connecting to target: {}...", target_url);
 
-    // Login Gate Sequence using the validated form criteria
+    if debug_mode {
+        println!("[DEBUG] Fetching raw landing page markup...");
+        let landing_html = client.get(target_url).send().await?.text().await?;
+        let mut f = File::create("./debug_landing_page.html")?;
+        f.write_all(landing_html.as_bytes())?;
+        println!("[DEBUG] Saved original landing file to ./debug_landing_page.html");
+    }
+    
     let mut startup_token = HashMap::new();
     startup_token.insert("action", "set_name");
     startup_token.insert("name", "Automated Combinatorial Rust Tool");
@@ -65,13 +72,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let workspace_body = login_res.text().await?;
     
+    if debug_mode {
+        let mut f = File::create("./debug_post_login_page.html")?;
+        f.write_all(workspace_body.as_bytes())?;
+        println!("[DEBUG] Saved post-login screen response to ./debug_post_login_page.html");
+    }
+
     if workspace_body.contains("Student or team name") || workspace_body.contains("name=\"name\"") {
         println!("WARNING: Session authentication failed. Still stuck on landing gate.");
     } else {
         println!("SUCCESS: Successfully logged in! Challenge workspace is active.");
     }
 
-    // Static parameter boundaries defined directly to ensure reliable scanning metrics
     let p_a = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
     let p_b = vec!["left".to_string(), "middle".to_string(), "right".to_string()];
     let p_c = vec!["0".to_string(), "1".to_string(), "2".to_string()];
@@ -91,13 +103,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
         let combo = format!("{} | {} | {} | {}", a, b, c, d);
 
-        if debug_mode && (body.contains("bug") || body.contains("open")) {
-            println!("[DEBUG] Flag matched layout space for pairing: {}", combo);
-        }
-
-        if body.contains("correct code") || body.contains("correct configuration") {
+        if body.contains("correct code") || body.contains("correct configuration") || body.contains("opened with the correct") {
             test_results.push(TestResult { combo, status: "LEGITIMATE_CODE".to_string(), details: "Authorized base configuration route".to_string() });
-        } else if body.contains("bug found") {
+        } else if body.contains("bug found") || body.contains("opened with a wrong code") {
             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: "Vulnerability isolated via Pairwise Matrix".to_string() });
         }
     }
@@ -115,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if is_three_way || is_four_way {
                         let body = submit_combo(&client, target_url, a.clone(), b.clone(), c.clone(), d.clone()).await?.to_lowercase();
-                        if body.contains("bug found") {
+                        if body.contains("bug found") || body.contains("opened with a wrong code") {
                             let label = if is_three_way { "Augmented Discovery: 3-Way Combo Leak" } else { "Augmented Discovery: Complex 4-Way Sequence Glitch" };
                             test_results.push(TestResult { combo, status: "BUG_FOUND".to_string(), details: label.to_string() });
                         }
