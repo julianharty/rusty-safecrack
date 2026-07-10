@@ -28,16 +28,13 @@ async fn create_session(url: &str, id: usize) -> Result<Client, Box<dyn std::err
     Ok(client)
 }
 
-// Fixed: Checks the active layout panel to ensure the clicked variable matches target expectations
 fn verify_dial_state(html: &str, param: &str, expected_value: &str) -> bool {
     let doc = Html::parse_document(html);
     if let Ok(selector) = Selector::parse(".current-code span") {
         for element in doc.select(&selector) {
             let text = element.text().collect::<Vec<_>>().join(" ").to_lowercase();
             let target_phrase = format!("{} = {}", param, expected_value).to_lowercase();
-            if text.contains(&target_phrase) {
-                return true;
-            }
+            if text.contains(&target_phrase) { return true; }
         }
     }
     false
@@ -47,7 +44,9 @@ fn verify_dial_state(html: &str, param: &str, expected_value: &str) -> bool {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 { std::process::exit(1); }
-    let target_url: &str = &args;
+    
+    // Fixed: Explicit index 1 extraction to satisfy compiler string slice requirements
+    let target_url: &str = &args[1];
     
     let mut delay_ms: u64 = 0;
     if let Some(idx) = args.iter().position(|x| x == "--delay") {
@@ -118,9 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let res = client.post(target_url).form(&form).send().await;
                     if let Ok(response) = res {
                         if let Ok(html_content) = response.text().await {
-                            if verify_dial_state(&html_content, param, target_val) {
-                                break; 
-                            }
+                            if verify_dial_state(&html_content, param, target_val) { break; }
                         }
                     }
                     click_retries += 1;
@@ -159,7 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-
                 logs.push(TestResult { combo, status: eval_status, details: diagnostics, latency_ms: start.elapsed().as_millis(), payload_bytes: size, http_status: status });
             }
         }
