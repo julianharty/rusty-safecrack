@@ -10,17 +10,26 @@ interface TestResult {
     details: string; latencyMs: number; payloadBytes: number; httpStatus: string;
 }
 
+const getCookieSignature = (cookieStr: string): string => {
+    if (!cookieStr) return "NONE";
+    const match = cookieStr.match(/session=([^;]+)/i);
+    return match ? match[1].substring(0, 8) : cookieStr.substring(0, 8);
+};
+
 const createSession = async (url: string, id: number): Promise<[AxiosInstance, string]> => {
     const instance = axios.create({ timeout: 5000 });
     const name = `State_Shared_Bot_B${id}`;
-    console.log(`[SESSION] Spawning fresh cookie context for: ${name}...`);
 
     const initGet = await instance.get(url);
-    const sessionCookie = initGet.headers['set-cookie']?.map(c => c.split(';')).join('; ') || '';
+    const sessionCookie = initGet.headers['set-cookie']?.map(c => c.split(';')[0]).join('; ') || '';
+    
+    console.log(`[SESSION] Initialized Session #${id} (${name}). Cookie Sign: [${getCookieSignature(sessionCookie)}]`);
 
     await instance.post(url, new URLSearchParams({
         'action': 'set_name', 'name': name
-    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie } });
+    }).toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie }
+    });
 
     return [instance, sessionCookie];
 };
@@ -29,7 +38,7 @@ const performBaselineReset = async (instance: AxiosInstance, url: string, cookie
     const baseline = [['A', 'red'], ['B', 'left'], ['C', '0'], ['D', 'alpha']];
     for (const [p, v] of baseline) {
         if (delay > 0) await new Promise(res => setTimeout(res, delay));
-        await instance.post(url, new URLSearchParams({ 'action': 'select', 'param': p, 'value': v }), {
+        await instance.post(url, new URLSearchParams({ 'action': 'select', 'param': p, 'value': v }).toString(), {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie }
         });
     }
@@ -42,13 +51,19 @@ const runCombo = async (instance: AxiosInstance, url: string, cookie: string, a:
     const parameters = [['A', a], ['B', b], ['C', c], ['D', d]];
     for (const [param, value] of parameters) {
         if (delay > 0) await new Promise(res => setTimeout(res, delay));
+        console.log(` -> Selecting Param ${param} = ${value} | Using Cookie: [${getCookieSignature(cookie)}]`);
+        
         await instance.post(url, new URLSearchParams({
             'action': 'select', 'param': param, 'value': value
-        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie } });
+        }).toString(), { 
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie } 
+        });
     }
 
     if (delay > 0) await new Promise(res => setTimeout(res, delay));
-    const res = await instance.post(url, new URLSearchParams({ 'action': 'add_attempt' }), {
+    console.log(` [EXECUTE] Pressing 'Test this combination' for: ${a}-${b}-${c}-${d}`);
+    
+    const res = await instance.post(url, new URLSearchParams({ 'action': 'add_attempt' }).toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie }
     });
 
@@ -118,13 +133,13 @@ async function main() {
         try {
             if (attemptCounter >= maxAttemptsPerSession) {
                 currentBatchId++;
-                // Fixed: Explicitly destructure array variables to maintain proper string header state
                 const [nextInstance, nextCookie] = await createSession(urlArg, currentBatchId);
                 currentInstance = nextInstance;
                 currentCookie = nextCookie;
                 attemptCounter = 0;
             }
 
+            // Fixed: Standardised argument reference to evaluate 'delayMs' variable correctly
             const [body, status, latency] = await runCombo(currentInstance, urlArg, currentCookie, a, b, c, d, delayMs);
             attemptCounter++;
 
@@ -134,16 +149,22 @@ async function main() {
             let diagnostics = 'Safe remained locked';
 
             const $ = cheerio.load(body);
-            const txt = $('.display').text().toLowerCase();
+            const attemptRows = $('.attempt, .card h2:contains("Attempts") ~ p, .card h2:contains("Attempts") ~ div, table tr');
+            let latestRowText = "";
+            
+            if (attemptRows.length > 0) {
+                latestRowText = $(attemptRows[attemptRows.length - 1]).text().toLowerCase();
+            } else {
+                latestRowText = $('.display').text().toLowerCase();
+            }
 
-            if (!txt.includes('closed')) {
-                if (combo === 'red | left | 0 | alpha') {
-                    evalStatus = 'LEGITIMATE_CODE';
-                    diagnostics = 'Authorized standard route';
-                } else {
-                    evalStatus = 'BUG_FOUND';
-                    diagnostics = label;
-                }
+            if (latestRowText.includes('bug found') || latestRowText.includes('wrong code')) {
+                evalStatus = 'BUG_FOUND';
+                diagnostics = label;
+                console.log(` [ALERT] SUCCESS! Bug verified for configuration: ${combo}`);
+            } else if (combo === 'red | left | 0 | alpha') {
+                evalStatus = 'LEGITIMATE_CODE';
+                diagnostics = 'Authorized standard route';
             }
 
             logs.push({ combo, status: evalStatus, details: diagnostics, latencyMs: latency, payloadBytes: size, httpStatus: status });
