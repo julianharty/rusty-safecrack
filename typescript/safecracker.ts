@@ -3,22 +3,17 @@ import type { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 import * as fs from 'fs';
 
-const REPORT_FILE: './safecrack_report.md' = './safecrack_report.md';
-const DELAY_MS = 15;
+const REPORT_FILE = './safecrack_report.md';
 
 interface TestResult {
-    combo: string; 
-    status: 'LEGITIMATE_CODE' | 'BUG_FOUND' | 'SECURELY_LOCKED';
-    details: string; 
-    latencyMs: number; 
-    payloadBytes: number; 
-    httpStatus: string;
+    combo: string; status: 'LEGITIMATE_CODE' | 'BUG_FOUND' | 'SECURELY_LOCKED';
+    details: string; latencyMs: number; payloadBytes: number; httpStatus: string;
 }
 
-// Accepts the dynamic url argument explicitly
-async function createSession(url: string, id: number): Promise<[AxiosInstance, string]> {
+const createSession = async (url: string, id: number): Promise<[AxiosInstance, string]> => {
     const instance = axios.create({ timeout: 5000 });
-    const name = `Clean_Audit_Bot_T${id}`;
+    const name = `State_Shared_Bot_B${id}`;
+    console.log(`[SESSION] Spawning fresh cookie context for: ${name}...`);
 
     const initGet = await instance.get(url);
     const sessionCookie = initGet.headers['set-cookie']?.map(c => c.split(';')).join('; ') || '';
@@ -28,42 +23,61 @@ async function createSession(url: string, id: number): Promise<[AxiosInstance, s
     }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie } });
 
     return [instance, sessionCookie];
-}
+};
 
-async function runCombo(instance: AxiosInstance, url: string, cookie: string, a: string, b: string, c: string, d: string): Promise<[string, string, number]> {
+const performBaselineReset = async (instance: AxiosInstance, url: string, cookie: string, delay: number): Promise<void> => {
+    const baseline = [['A', 'red'], ['B', 'left'], ['C', '0'], ['D', 'alpha']];
+    for (const [p, v] of baseline) {
+        if (delay > 0) await new Promise(res => setTimeout(res, delay));
+        await instance.post(url, new URLSearchParams({ 'action': 'select', 'param': p, 'value': v }), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie }
+        });
+    }
+};
+
+const runCombo = async (instance: AxiosInstance, url: string, cookie: string, a: string, b: string, c: string, d: string, delay: number): Promise<[string, string, number]> => {
     const start = Date.now();
-    const parameters = [['A', a], ['B', b], ['C', c], ['D', d]];
+    await performBaselineReset(instance, url, cookie, delay);
 
+    const parameters = [['A', a], ['B', b], ['C', c], ['D', d]];
     for (const [param, value] of parameters) {
-        if (DELAY_MS > 0) await new Promise(res => setTimeout(res, DELAY_MS));
+        if (delay > 0) await new Promise(res => setTimeout(res, delay));
         await instance.post(url, new URLSearchParams({
             'action': 'select', 'param': param, 'value': value
         }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie } });
     }
 
-    if (DELAY_MS > 0) await new Promise(res => setTimeout(res, DELAY_MS));
-    
+    if (delay > 0) await new Promise(res => setTimeout(res, delay));
     const res = await instance.post(url, new URLSearchParams({ 'action': 'add_attempt' }), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie }
     });
 
     return [res.data, res.status.toString(), Date.now() - start];
-}
+};
 
 async function main() {
-    // Collect command line arguments (process.argv[0] is node, process.argv[1] is the script path)
     const args = process.argv.slice(2);
-    const targetUrl = args[0];
-
-    if (!targetUrl) {
-        console.error("Error: Missing target URL parameter.");
-        console.error("Usage: node --experimental-strip-types safecracker.ts <TARGET_URL>");
+    const urlArg = args.find(a => !a.startsWith('--'));
+    if (!urlArg) {
+        console.error("Usage: node --experimental-strip-types safecracker.ts <URL> [--attempts 10] [--delay 15]");
         process.exit(1);
     }
 
-    console.log(`Connecting to dynamic target sequence engine: ${targetUrl} ...`);
-    console.log("Generating combinatorial coverage dataset...");
-    
+    let maxAttemptsPerSession = 10;
+    const attemptsIdx = args.indexOf('--attempts');
+    if (attemptsIdx !== -1 && attemptsIdx + 1 < args.length) {
+        maxAttemptsPerSession = parseInt(args[attemptsIdx + 1], 10) || 10;
+    }
+
+    let delayMs = 0;
+    const delayIdx = args.indexOf('--delay');
+    if (delayIdx !== -1 && delayIdx + 1 < args.length) {
+        delayMs = parseInt(args[delayIdx + 1], 10) || 0;
+    }
+
+    console.log(`Connecting to target: ${urlArg}`);
+    console.log(`[CONFIG] Session threshold locked at: ${maxAttemptsPerSession} attempts.`);
+
     const pA = ['red', 'green', 'blue'];
     const pB = ['left', 'middle', 'right'];
     const pC = ['0', '1', '2'];
@@ -95,18 +109,27 @@ async function main() {
     }
 
     const logs: TestResult[] = [];
-    let currentId = 1;
-    console.log(`Running matrix sweep over ${testCases.length} isolated per-test sessions...`);
+    let currentBatchId = 1;
+    let attemptCounter = 0;
+
+    let [currentInstance, currentCookie] = await createSession(urlArg, currentBatchId);
 
     for (const [a, b, c, d, label] of testCases) {
         try {
-            const [instance, cookie] = await createSession(targetUrl, currentId);
-            currentId++;
+            if (attemptCounter >= maxAttemptsPerSession) {
+                currentBatchId++;
+                // Fixed: Explicitly destructure array variables to maintain proper string header state
+                const [nextInstance, nextCookie] = await createSession(urlArg, currentBatchId);
+                currentInstance = nextInstance;
+                currentCookie = nextCookie;
+                attemptCounter = 0;
+            }
 
-            const [body, status, latency] = await runCombo(instance, targetUrl, cookie, a, b, c, d);
+            const [body, status, latency] = await runCombo(currentInstance, urlArg, currentCookie, a, b, c, d, delayMs);
+            attemptCounter++;
+
             const combo = `${a} | ${b} | ${c} | ${d}`;
             const size = body.length;
-
             let evalStatus: 'LEGITIMATE_CODE' | 'BUG_FOUND' | 'SECURELY_LOCKED' = 'SECURELY_LOCKED';
             let diagnostics = 'Safe remained locked';
 
@@ -125,11 +148,11 @@ async function main() {
 
             logs.push({ combo, status: evalStatus, details: diagnostics, latencyMs: latency, payloadBytes: size, httpStatus: status });
         } catch (err) {
-            console.error(`[ERROR] Execution broken at combo: ${a}-${b}-${c}-${d}`, err);
+            console.error(`[ERROR] Broken at combo: ${a}-${b}-${c}-${d}`, err);
         }
     }
 
-    let markdown = `# Production Safe Cracking Metrics & Comprehensive TypeScript Report\n\n`;
+    let markdown = `# Production Safe Cracking Shared-Session Report\n\n`;
     markdown += `| Combination Profile (A, B, C, D) | Status | Diagnostics | Latency | Size | HTTP |\n`;
     markdown += `| :--- | :--- | :--- | :--- | :--- | :--- |\n`;
     for (const r of logs) {
