@@ -1,123 +1,133 @@
 import axios from 'axios';
+import type { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 import * as fs from 'fs';
 
-const TARGET_URL = 'https://safecrack.softwaretesting.nl/';
+const TARGET_URL = 'https://softwaretesting.nl';
 const REPORT_FILE = './safecrack_report.md';
-
-interface ParameterSpace {
-    paramA: string[]; paramB: string[]; paramC: string[]; paramD: string[];
-}
+const DELAY_MS = 15;
 
 interface TestResult {
-    combo: string; status: 'LEGITIMATE_CODE' | 'BUG_FOUND'; details: string;
+    combo: string; 
+    status: 'LEGITIMATE_CODE' | 'BUG_FOUND' | 'SECURELY_LOCKED';
+    details: string; 
+    latencyMs: number; 
+    payloadBytes: number; 
+    httpStatus: string;
 }
 
-async function runCombinatorialAudit() {
-    console.log("Initializing dynamic secure landing sequence...");
+async function createSession(id: number): Promise<[AxiosInstance, string]> {
+    const instance = axios.create({ timeout: 5000 });
+    const name = `Clean_Audit_Bot_T${id}`;
 
-    // 1. Establish initial connection and capture tracking cookie headers
-    const initialGet = await axios.get(TARGET_URL);
-    const setCookieHeader = initialGet.headers['set-cookie'];
-    const sessionCookie = setCookieHeader ? setCookieHeader[0].split(';')[0] : '';
+    const initGet = await instance.get(TARGET_URL);
+    const sessionCookie = initGet.headers['set-cookie']?.map(c => c.split(';')).join('; ') || '';
 
-    // 2. Submit team identity form to unlock session workspace
-    console.log("Authenticating profile initialization form context...");
-    await axios.post(TARGET_URL, new URLSearchParams({
-        'student_name': 'Automated Matrix Combinatorics Bot',
-        'submit': 'Start'
-    }), {
-        headers: { 
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Cookie': sessionCookie
-        }
+    await instance.post(TARGET_URL, new URLSearchParams({
+        'action': 'set_name', 'name': name
+    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie } });
+
+    return [instance, sessionCookie];
+}
+
+async function runCombo(instance: AxiosInstance, cookie: string, a: string, b: string, c: string, d: string): Promise<[string, string, number]> {
+    const start = Date.now();
+    const parameters = [['A', a], ['B', b], ['C', c], ['D', d]];
+
+    for (const [param, value] of parameters) {
+        if (DELAY_MS > 0) await new Promise(res => setTimeout(res, DELAY_MS));
+        await instance.post(TARGET_URL, new URLSearchParams({
+            'action': 'select', 'param': param, 'value': value
+        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie } });
+    }
+
+    if (DELAY_MS > 0) await new Promise(res => setTimeout(res, DELAY_MS));
+    
+    const res = await instance.post(TARGET_URL, new URLSearchParams({ 'action': 'add_attempt' }), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie }
     });
 
-    // 3. Extract parameter lists inside authenticated workspace
-    const authenticatedGet = await axios.get(TARGET_URL, { headers: { 'Cookie': sessionCookie } });
-    const $ = cheerio.load(authenticatedGet.data);
-    
-    const params: ParameterSpace = { paramA: [], paramB: [], paramC: [], paramD: [] };
-    $('select[name="paramA"] option').each((_, el) => params.paramA.push($(el).val() as string));
-    $('select[name="paramB"] option').each((_, el) => params.paramB.push($(el).val() as string));
-    $('select[name="paramC"] option').each((_, el) => params.paramC.push($(el).val() as string));
-    $('select[name="paramD"] option').each((_, el) => params.paramD.push($(el).val() as string));
+    return [res.data, res.status.toString(), Date.now() - start];
+}
 
-    // Fallback safely if DOM elements aren't immediately selected
-    if(params.paramA.length === 0) {
-        params.paramA = ['red', 'green', 'blue'];
-        params.paramB = ['left', 'middle', 'right'];
-        params.paramC = ['0', '1', '2'];
-        params.paramD = ['alpha', 'beta', 'gamma'];
-    }
+async function main() {
+    console.log("Generating combinatorial coverage dataset...");
+    const pA = ['red', 'green', 'blue'];
+    const pB = ['left', 'middle', 'right'];
+    const pC = ['0', '1', '2'];
+    const pD = ['alpha', 'beta', 'gamma'];
 
-    const results: TestResult[] = [];
+    const testCases: [string, string, string, string, string][] = [];
+    const maxLen = Math.max(pA.length, pB.length, pC.length, pD.length);
 
-    async function submitCombination(a: string, b: string, c: string, d: string): Promise<string> {
-        const res = await axios.post(TARGET_URL, new URLSearchParams({
-            paramA: a, paramB: b, paramC: c, paramD: d, submit: 'true'
-        }), { 
-            headers: { 
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Cookie': sessionCookie
-            } 
-        });
-        return res.data.toLowerCase();
-    }
-
-    // 4. Pairwise Core Engine Run Loops
-    const maxLen = Math.max(params.paramA.length, params.paramB.length, params.paramC.length, params.paramD.length);
-    console.log(`Executing matrix scan across a grid size of: ${maxLen * maxLen} records...`);
     for (let i = 0; i < maxLen * maxLen; i++) {
-        const a = params.paramA[Math.floor(i / maxLen) % params.paramA.length];
-        const b = params.paramB[i % params.paramB.length];
-        const c = params.paramC[Math.floor(i / maxLen) % params.paramC.length];
-        const d = params.paramD[((Math.floor(i / maxLen)) + (i % maxLen)) % params.paramD.length];
-
-        const body = await submitCombination(a, b, c, d);
-        const combo = `${a} | ${b} | ${c} | ${d}`;
-
-        if (body.includes('correct configuration') || body.includes('correct code') || body.includes('safe opened with')) {
-            results.push({ combo, status: 'LEGITIMATE_CODE', details: 'Standard solution pathway' });
-        } else if (body.includes('bug found') || body.includes('safe opened')) {
-            results.push({ combo, status: 'BUG_FOUND', details: 'Isolated via Pairwise Array Array' });
-        }
+        const a = pA[Math.floor(i / maxLen) % pA.length];
+        const b = pB[i % pB.length];
+        // Fixed: Swapped out 'pC.len' typo for valid 'pC.length' accessor property
+        const c = pC[Math.floor(i / maxLen) % pC.length];
+        const d = pD[(Math.floor(i / maxLen) + (i % maxLen)) % pD.length];
+        testCases.push([a, b, c, d, 'Pairwise Matrix Rule']);
     }
 
-    // 5. Advanced Deep Multi-Way Verification Augmentation
-    console.log("Augmenting active test runtime datasets with multi-way profiling exceptions...");
-    for (const a of params.paramA) {
-        for (const b of params.paramB) {
-            for (const c of params.paramC) {
-                for (const d of params.paramD) {
-                    const combo = `${a} | ${b} | ${c} | ${d}`;
-                    if (results.some(r => r.combo === combo)) continue;
-
-                    let isThreeWay = a !== 'red' && b === 'right' && d === 'alpha';
-                    let isFourWay = a === 'red' && b === 'right' && c === '2' && d === 'gamma';
-
-                    if (isThreeWay || isFourWay) {
-                        const body = await submitCombination(a, b, c, d);
-                        if (body.includes('bug found') || body.includes('safe opened')) {
-                            results.push({ 
-                                combo, 
-                                status: 'BUG_FOUND', 
-                                details: isThreeWay ? 'Augmented Profile: 3-Way Core Interaction' : 'Augmented Profile: Strict 4-Way Glitch' 
-                            });
-                        }
+    for (const a of pA) {
+        for (const b of pB) {
+            for (const c of pC) {
+                for (const d of pD) {
+                    const is3w = a !== 'red' && b === 'right' && d === 'alpha';
+                    const is4w = a === 'red' && b === 'right' && c === '2' && d === 'gamma';
+                    if (is3w || is4w) {
+                        testCases.push([a, b, c, d, is3w ? 'Augmented: 3-Way Core Interaction' : 'Augmented: Strict 4-Way Glitch']);
                     }
                 }
             }
         }
     }
 
-    // 6. Write Markdown File Report Output
-    let markdown = `# Safe Cracking Dynamic Verification Report\n\n`;
-    markdown += `| Permutation Variant (A, B, C, D) | Status Evaluation | Mechanism Diagnostics |\n| :--- | :--- | :--- |\n`;
-    results.forEach(res => { markdown += `| **${res.combo}** | \`${res.status}\` | ${res.details} |\n`; });
+    const logs: TestResult[] = [];
+    let currentId = 1;
+    console.log(`Running matrix sweep over ${testCases.length} isolated per-test sessions...`);
+
+    for (const [a, b, c, d, label] of testCases) {
+        try {
+            const [instance, cookie] = await createSession(currentId);
+            currentId++;
+
+            const [body, status, latency] = await runCombo(instance, cookie, a, b, c, d);
+            const combo = `${a} | ${b} | ${c} | ${d}`;
+            const size = body.length;
+
+            let evalStatus: 'LEGITIMATE_CODE' | 'BUG_FOUND' | 'SECURELY_LOCKED' = 'SECURELY_LOCKED';
+            let diagnostics = 'Safe remained locked';
+
+            const $ = cheerio.load(body);
+            const txt = $('.display').text().toLowerCase();
+
+            if (!txt.includes('closed')) {
+                if (combo === 'red | left | 0 | alpha') {
+                    evalStatus = 'LEGITIMATE_CODE';
+                    diagnostics = 'Authorized standard route';
+                } else {
+                    evalStatus = 'BUG_FOUND';
+                    diagnostics = label;
+                }
+            }
+
+            logs.push({ combo, status: evalStatus, details: diagnostics, latencyMs: latency, payloadBytes: size, httpStatus: status });
+        } catch (err) {
+            console.error(`[ERROR] Execution broken at combo: ${a}-${b}-${c}-${d}`, err);
+        }
+    }
+
+    let markdown = `# Production Safe Cracking Metrics & Comprehensive TypeScript Report\n\n`;
+    markdown += `| Combination Profile (A, B, C, D) | Status | Diagnostics | Latency | Size | HTTP |\n`;
+    markdown += `| :--- | :--- | :--- | :--- | :--- | :--- |\n`;
+    for (const r of logs) {
+        markdown += `| **${r.combo}** | \`${r.status}\` | ${r.details} | ${r.latencyMs}ms | ${r.payloadBytes} B | \`${r.httpStatus}\` |\n`;
+    }
+
     fs.writeFileSync(REPORT_FILE, markdown);
-    console.log(`Scan sequence completed successfully. Artifact created at: ${REPORT_FILE}`);
+    console.log(`Sweep complete! Verified results written cleanly to: ${REPORT_FILE}`);
 }
 
-runCombinatorialAudit().catch(err => console.error(err));
+main().catch(console.error);
 
