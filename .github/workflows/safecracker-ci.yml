@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: # Allows manual pipeline triggering from the GitHub UI
+  workflow_dispatch: 
 
 jobs:
   # --- STAGE 1: RUN THE COMPILED RUST ENGINE ---
@@ -31,10 +31,17 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      # New Step: Initialize your challenge backend inside the runner framework environment
+      - name: Launch Test Portal Server in Background
+        run: |
+          # Replace 'node server.js' with your exact local execution command (e.g. python -m http.server 5004)
+          node server.js & 
+          sleep 3 # Critical boundary window: wait for socket binding sequence to clear
+
       - name: Compile and Run Security Audit
         run: |
-          # Pass the target environment address and pacing parameters explicitly
-          cargo run --release --bin safecracker https://softwaretesting.nl --delay 20
+          # We point directly to our freshly initialized local loopback interface
+          cargo run --release --bin safecracker http://localhost:5004 --delay 20
 
       - name: Archive Rust Verification Report
         uses: actions/upload-artifact@v4
@@ -63,10 +70,15 @@ jobs:
         run: |
           npm ci || npm install
 
+      # New Step: Mirror the identical local background server startup sequence here
+      - name: Launch Test Portal Server in Background
+        run: |
+          node server.js & 
+          sleep 3
+
       - name: Execute Native TypeScript Script
         run: |
-          # Run natively utilizing Node v25 type-stripping flags
-          node --experimental-strip-types safecracker.ts https://softwaretesting.nl --attempts 10 --delay 20
+          node --experimental-strip-types safecracker.ts http://localhost:5004 --attempts 10 --delay 20
 
       - name: Archive TypeScript Verification Report
         uses: actions/upload-artifact@v4
