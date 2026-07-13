@@ -1,0 +1,77 @@
+name: Safe-Cracker Combinatorial Security Audit
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows manual pipeline triggering from the GitHub UI
+
+jobs:
+  # --- STAGE 1: RUN THE COMPILED RUST ENGINE ---
+  audit-rust:
+    name: Execute Rust Concurrent Matrix Sweep
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Install Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Compile and Run Security Audit
+        run: |
+          # Pass the target environment address and pacing parameters explicitly
+          cargo run --release --bin safecracker https://softwaretesting.nl --delay 20
+
+      - name: Archive Rust Verification Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-safecrack-report
+          path: ./safecrack_report.md
+          retention-days: 7
+
+  # --- STAGE 2: RUN THE MODERN TYPESCRIPT ENGINE ---
+  audit-typescript:
+    name: Execute TypeScript State-Shared Sweep
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js Environment (v25)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: 'npm'
+          cache-dependency-path: './package.json'
+
+      - name: Install Application Dependencies
+        run: |
+          npm ci || npm install
+
+      - name: Execute Native TypeScript Script
+        run: |
+          # Run natively utilizing Node v25 type-stripping flags
+          node --experimental-strip-types safecracker.ts https://softwaretesting.nl --attempts 10 --delay 20
+
+      - name: Archive TypeScript Verification Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: typescript-safecrack-report
+          path: ./safecrack_report.md
+          retention-days: 7
+
