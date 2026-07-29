@@ -5,14 +5,14 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: 
+  workflow_dispatch:
 
 jobs:
   # --- STAGE 1: RUN THE COMPILED RUST ENGINE ---
   audit-rust:
     name: Execute Rust Concurrent Matrix Sweep
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -28,26 +28,40 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
 
-      # New Step: Initialize your challenge backend inside the runner framework environment
-      - name: Launch Test Portal Server in Background
-        run: |
-          # Replace 'node server.js' with your exact local execution command (e.g. python -m http.server 5004)
-          node server.js & 
-          sleep 3 # Critical boundary window: wait for socket binding sequence to clear
+      - name: Set Up Python for the Reference Server
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - name: Compile and Run Security Audit
+      - name: Install Reference Server Dependencies
+        run: pip install -r server/requirements.txt
+
+      # The reference server must live in the SAME step as the tool run: a
+      # process backgrounded with '&' in one step is torn down when that step's
+      # shell exits, so it would be gone by the next step.
+      - name: Launch Reference Server and Run Security Audit
+        working-directory: rust
         run: |
-          # We point directly to our freshly initialized local loopback interface
-          cargo run --release --bin safecracker http://localhost:5004 --delay 20
+          python ../server/safe_server.py --port 5004 > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5004/ >/dev/null && { echo "Reference server is up."; break; }
+            sleep 1
+          done
+          cargo run --release --bin safecracker http://localhost:5004 --delay 0
+
+      - name: Show Server Log on Failure
+        if: failure()
+        run: cat rust/server.log || true
 
       - name: Archive Rust Verification Report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rust-safecrack-report
-          path: ./safecrack_report.md
+          path: rust/safecrack_report.md
           retention-days: 7
 
   # --- STAGE 2: RUN THE MODERN TYPESCRIPT ENGINE ---
@@ -59,31 +73,41 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Install Node.js Environment (v25)
+      - name: Install Node.js Environment (v24)
         uses: actions/setup-node@v4
         with:
-          node-version: 25
-          cache: 'npm'
-          cache-dependency-path: './package.json'
+          node-version: '24'
+
+      - name: Set Up Python for the Reference Server
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Reference Server Dependencies
+        run: pip install -r server/requirements.txt
 
       - name: Install Application Dependencies
-        run: |
-          npm ci || npm install
+        working-directory: typescript
+        run: npm ci || npm install
 
-      # New Step: Mirror the identical local background server startup sequence here
-      - name: Launch Test Portal Server in Background
+      - name: Launch Reference Server and Run Security Audit
+        working-directory: typescript
         run: |
-          node server.js & 
-          sleep 3
+          python ../server/safe_server.py --port 5004 > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5004/ >/dev/null && { echo "Reference server is up."; break; }
+            sleep 1
+          done
+          node --experimental-strip-types safecracker.ts http://localhost:5004 --attempts 10 --delay 0
 
-      - name: Execute Native TypeScript Script
-        run: |
-          node --experimental-strip-types safecracker.ts http://localhost:5004 --attempts 10 --delay 20
+      - name: Show Server Log on Failure
+        if: failure()
+        run: cat typescript/server.log || true
 
       - name: Archive TypeScript Verification Report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: typescript-safecrack-report
-          path: ./safecrack_report.md
+          path: typescript/safecrack_report.md
           retention-days: 7
-

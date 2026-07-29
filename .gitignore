@@ -1,0 +1,18 @@
+# --- Rust ---
+/rust/target/
+
+# --- Node / TypeScript ---
+/typescript/node_modules/
+
+# --- Python (reference server) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ci-venv/
+
+# --- Generated audit reports (produced by each tool run / CI) ---
+safecrack_report.md
+
+# --- Runtime logs ---
+server.log
